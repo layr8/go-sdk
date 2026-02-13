@@ -19,7 +19,7 @@ import (
 	"os/signal"
 	"strings"
 
-	layr8 "github.com/layr8/layr8-go-sdk"
+	layr8 "github.com/layr8/go-sdk"
 	_ "github.com/lib/pq"
 )
 
