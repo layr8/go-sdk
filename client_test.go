@@ -531,5 +531,215 @@ func TestClient_Request_WithParentThread(t *testing.T) {
 	}
 }
 
-// Ensure fmt is used (for handler error tests in future tasks)
-var _ = fmt.Errorf
+func TestClient_InboundHandler_AutoAck(t *testing.T) {
+	mock, _, wsURL := setupMockServer(t)
+
+	handlerCalled := make(chan *Message, 1)
+
+	client, _ := NewClient(Config{
+		NodeURL:  wsURL,
+		APIKey:   "test-key",
+		AgentDID: "did:web:alice",
+	})
+	client.Handle("https://didcomm.org/basicmessage/2.0/message",
+		func(msg *Message) (*Message, error) {
+			handlerCalled <- msg
+			return nil, nil
+		},
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client.Connect(ctx)
+	defer client.Close()
+
+	// Server sends an inbound message
+	inbound, _ := json.Marshal(map[string]interface{}{
+		"context": map[string]interface{}{
+			"recipient":  "did:web:alice",
+			"authorized": true,
+			"sender_credentials": []map[string]interface{}{
+				{"credential_subject": map[string]string{"id": "did:web:bob", "name": "Bob"}},
+			},
+		},
+		"plaintext": map[string]interface{}{
+			"id":   "inbound-1",
+			"type": "https://didcomm.org/basicmessage/2.0/message",
+			"from": "did:web:bob",
+			"to":   []string{"did:web:alice"},
+			"body": map[string]string{"content": "hello alice"},
+		},
+	})
+	mock.sendToClient(phoenixMessage{
+		Topic:   "plugin:lobby",
+		Event:   "message",
+		Payload: inbound,
+	})
+
+	select {
+	case msg := <-handlerCalled:
+		if msg.From != "did:web:bob" {
+			t.Errorf("msg.From = %q, want %q", msg.From, "did:web:bob")
+		}
+		if msg.Context == nil {
+			t.Fatal("msg.Context should not be nil")
+		}
+		if !msg.Context.Authorized {
+			t.Error("msg.Context.Authorized should be true")
+		}
+		if len(msg.Context.SenderCredentials) != 1 || msg.Context.SenderCredentials[0].Name != "Bob" {
+			t.Error("msg.Context.SenderCredentials should contain Bob")
+		}
+		var body map[string]string
+		msg.UnmarshalBody(&body)
+		if body["content"] != "hello alice" {
+			t.Errorf("body content = %q, want %q", body["content"], "hello alice")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for handler to be called")
+	}
+
+	// Verify ack was sent
+	time.Sleep(200 * time.Millisecond)
+	received := mock.getReceived()
+	var ackFound bool
+	for _, msg := range received {
+		if msg.Event == "ack" {
+			ackFound = true
+			break
+		}
+	}
+	if !ackFound {
+		t.Error("auto-ack should have been sent")
+	}
+}
+
+func TestClient_InboundHandler_ResponseAutoFill(t *testing.T) {
+	mock, _, wsURL := setupMockServer(t)
+
+	client, _ := NewClient(Config{
+		NodeURL:  wsURL,
+		APIKey:   "test-key",
+		AgentDID: "did:web:alice",
+	})
+	client.Handle("https://layr8.io/protocols/echo/1.0/request",
+		func(msg *Message) (*Message, error) {
+			return &Message{
+				Type: "https://layr8.io/protocols/echo/1.0/response",
+				Body: map[string]string{"echo": "pong"},
+			}, nil
+		},
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client.Connect(ctx)
+	defer client.Close()
+
+	// Server sends request
+	inbound, _ := json.Marshal(map[string]interface{}{
+		"plaintext": map[string]interface{}{
+			"id":   "req-1",
+			"type": "https://layr8.io/protocols/echo/1.0/request",
+			"from": "did:web:bob",
+			"to":   []string{"did:web:alice"},
+			"thid": "thread-abc",
+			"body": map[string]string{"message": "ping"},
+		},
+	})
+	mock.sendToClient(phoenixMessage{
+		Topic:   "plugin:lobby",
+		Event:   "message",
+		Payload: inbound,
+	})
+
+	// Wait for response to be sent back to server
+	time.Sleep(500 * time.Millisecond)
+	received := mock.getReceived()
+
+	var responseFound bool
+	for _, msg := range received {
+		if msg.Event == "message" {
+			var envelope struct {
+				Plaintext struct {
+					Type string   `json:"type"`
+					To   []string `json:"to"`
+					From string   `json:"from"`
+					ThID string   `json:"thid"`
+				} `json:"plaintext"`
+			}
+			json.Unmarshal(msg.Payload, &envelope)
+			if envelope.Plaintext.Type == "https://layr8.io/protocols/echo/1.0/response" {
+				responseFound = true
+				if envelope.Plaintext.From != "did:web:alice" {
+					t.Errorf("response From = %q, want auto-filled %q", envelope.Plaintext.From, "did:web:alice")
+				}
+				if len(envelope.Plaintext.To) != 1 || envelope.Plaintext.To[0] != "did:web:bob" {
+					t.Errorf("response To = %v, want auto-filled [did:web:bob]", envelope.Plaintext.To)
+				}
+				if envelope.Plaintext.ThID != "thread-abc" {
+					t.Errorf("response thid = %q, want auto-filled %q", envelope.Plaintext.ThID, "thread-abc")
+				}
+			}
+		}
+	}
+	if !responseFound {
+		t.Error("server should have received an echo response")
+	}
+}
+
+func TestClient_InboundHandler_ErrorSendsProblemReport(t *testing.T) {
+	mock, _, wsURL := setupMockServer(t)
+
+	client, _ := NewClient(Config{
+		NodeURL:  wsURL,
+		APIKey:   "test-key",
+		AgentDID: "did:web:alice",
+	})
+	client.Handle("https://layr8.io/protocols/echo/1.0/request",
+		func(msg *Message) (*Message, error) {
+			return nil, fmt.Errorf("something went wrong")
+		},
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client.Connect(ctx)
+	defer client.Close()
+
+	inbound, _ := json.Marshal(map[string]interface{}{
+		"plaintext": map[string]interface{}{
+			"id":   "req-1",
+			"type": "https://layr8.io/protocols/echo/1.0/request",
+			"from": "did:web:bob",
+			"to":   []string{"did:web:alice"},
+			"body": map[string]string{"message": "ping"},
+		},
+	})
+	mock.sendToClient(phoenixMessage{
+		Topic:   "plugin:lobby",
+		Event:   "message",
+		Payload: inbound,
+	})
+
+	time.Sleep(500 * time.Millisecond)
+	received := mock.getReceived()
+
+	var problemReportFound bool
+	for _, msg := range received {
+		if msg.Event == "message" {
+			var envelope struct {
+				Plaintext struct {
+					Type string `json:"type"`
+				} `json:"plaintext"`
+			}
+			json.Unmarshal(msg.Payload, &envelope)
+			if envelope.Plaintext.Type == "https://didcomm.org/report-problem/2.0/problem-report" {
+				problemReportFound = true
+			}
+		}
+	}
+	if !problemReportFound {
+		t.Error("handler error should result in a problem report being sent")
+	}
+}
