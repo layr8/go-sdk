@@ -11,13 +11,73 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// phoenixMessage is the wire format for Phoenix Channel protocol (JSON object variant).
+// phoenixMessage is the internal representation of a Phoenix Channel message.
+// On the wire, it uses the V2 JSON array format: [join_ref, ref, topic, event, payload].
 type phoenixMessage struct {
-	JoinRef string          `json:"join_ref,omitempty"`
-	Ref     string          `json:"ref,omitempty"`
-	Topic   string          `json:"topic"`
-	Event   string          `json:"event"`
-	Payload json.RawMessage `json:"payload"`
+	JoinRef string          // null on wire when empty
+	Ref     string          // null on wire when empty
+	Topic   string
+	Event   string
+	Payload json.RawMessage
+}
+
+// marshalPhoenixMsg encodes a phoenixMessage as a V2 JSON array.
+func marshalPhoenixMsg(msg phoenixMessage) ([]byte, error) {
+	arr := make([]interface{}, 5)
+
+	if msg.JoinRef == "" {
+		arr[0] = nil
+	} else {
+		arr[0] = msg.JoinRef
+	}
+
+	if msg.Ref == "" {
+		arr[1] = nil
+	} else {
+		arr[1] = msg.Ref
+	}
+
+	arr[2] = msg.Topic
+	arr[3] = msg.Event
+	arr[4] = json.RawMessage(msg.Payload)
+
+	return json.Marshal(arr)
+}
+
+// unmarshalPhoenixMsg decodes a V2 JSON array into a phoenixMessage.
+func unmarshalPhoenixMsg(data []byte) (phoenixMessage, error) {
+	var arr []json.RawMessage
+	if err := json.Unmarshal(data, &arr); err != nil {
+		return phoenixMessage{}, fmt.Errorf("decode phoenix array: %w", err)
+	}
+	if len(arr) != 5 {
+		return phoenixMessage{}, fmt.Errorf("expected 5-element array, got %d", len(arr))
+	}
+
+	var msg phoenixMessage
+
+	// join_ref (nullable string)
+	var joinRef *string
+	if err := json.Unmarshal(arr[0], &joinRef); err == nil && joinRef != nil {
+		msg.JoinRef = *joinRef
+	}
+
+	// ref (nullable string)
+	var ref *string
+	if err := json.Unmarshal(arr[1], &ref); err == nil && ref != nil {
+		msg.Ref = *ref
+	}
+
+	// topic
+	json.Unmarshal(arr[2], &msg.Topic)
+
+	// event
+	json.Unmarshal(arr[3], &msg.Event)
+
+	// payload (keep as raw JSON)
+	msg.Payload = arr[4]
+
+	return msg, nil
 }
 
 // phoenixChannel implements the transport interface using WebSocket/Phoenix Channels.
@@ -49,7 +109,7 @@ func newPhoenixChannel(wsURL, apiKey, agentDID string) *phoenixChannel {
 		wsURL:    wsURL,
 		apiKey:   apiKey,
 		agentDID: agentDID,
-		topic:    "plugin:lobby",
+		topic:    fmt.Sprintf("plugins:%s", agentDID),
 		done:     make(chan struct{}),
 	}
 }
@@ -97,9 +157,21 @@ func (c *phoenixChannel) join(ctx context.Context, protocols []string) error {
 	ref := c.nextRef()
 	c.joinRef = ref
 
-	payload, _ := json.Marshal(map[string]interface{}{
+	joinParams := map[string]interface{}{
 		"payload_types": protocols,
-	})
+		"did_spec": map[string]interface{}{
+			"mode":    "Create",
+			"storage": "ephemeral",
+			"type":    "plugin",
+			"verificationMethods": []map[string]string{
+				{"purpose": "authentication"},
+				{"purpose": "assertionMethod"},
+				{"purpose": "keyAgreement"},
+			},
+		},
+	}
+
+	payload, _ := json.Marshal(joinParams)
 
 	msg := phoenixMessage{
 		JoinRef: ref,
@@ -229,8 +301,8 @@ func (c *phoenixChannel) readLoop() {
 			}
 		}
 
-		var msg phoenixMessage
-		if err := json.Unmarshal(data, &msg); err != nil {
+		msg, err := unmarshalPhoenixMsg(data)
+		if err != nil {
 			continue
 		}
 
@@ -296,7 +368,7 @@ func (c *phoenixChannel) writeMsg(msg phoenixMessage) error {
 	if c.conn == nil {
 		return ErrNotConnected
 	}
-	data, err := json.Marshal(msg)
+	data, err := marshalPhoenixMsg(msg)
 	if err != nil {
 		return err
 	}

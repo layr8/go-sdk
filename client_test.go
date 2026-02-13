@@ -295,28 +295,26 @@ func TestClient_Request_ResponseCorrelation(t *testing.T) {
 		}
 
 		if msg.Event == "message" {
-			// Parse outbound to get thid
-			var envelope struct {
-				Plaintext struct {
-					ThID string `json:"thid"`
-					From string `json:"from"`
-				} `json:"plaintext"`
+			// Parse outbound DIDComm message (bare, no plaintext wrapper)
+			var outbound struct {
+				ThID string `json:"thid"`
+				From string `json:"from"`
 			}
-			json.Unmarshal(msg.Payload, &envelope)
+			json.Unmarshal(msg.Payload, &outbound)
 
-			// Send response with matching thid
+			// Send inbound response (node wraps in context+plaintext)
 			resp, _ := json.Marshal(map[string]interface{}{
 				"plaintext": map[string]interface{}{
 					"id":   "resp-1",
 					"type": "https://layr8.io/protocols/echo/1.0/response",
 					"from": "did:web:bob",
-					"to":   []string{envelope.Plaintext.From},
-					"thid": envelope.Plaintext.ThID,
+					"to":   []string{outbound.From},
+					"thid": outbound.ThID,
 					"body": map[string]string{"echo": "hello"},
 				},
 			})
 			mock.sendToClient(phoenixMessage{
-				Topic:   "plugin:lobby",
+				Topic:   "plugins:did:web:alice",
 				Event:   "message",
 				Payload: resp,
 			})
@@ -405,19 +403,17 @@ func TestClient_Request_ProblemReport(t *testing.T) {
 			return
 		}
 		if msg.Event == "message" {
-			var envelope struct {
-				Plaintext struct {
-					ThID string `json:"thid"`
-				} `json:"plaintext"`
+			var outbound struct {
+				ThID string `json:"thid"`
 			}
-			json.Unmarshal(msg.Payload, &envelope)
+			json.Unmarshal(msg.Payload, &outbound)
 
 			resp, _ := json.Marshal(map[string]interface{}{
 				"plaintext": map[string]interface{}{
 					"id":   "err-1",
 					"type": "https://didcomm.org/report-problem/2.0/problem-report",
 					"from": "did:web:bob",
-					"thid": envelope.Plaintext.ThID,
+					"thid": outbound.ThID,
 					"body": map[string]string{
 						"code":    "e.p.xfer.cant-process",
 						"comment": "database unavailable",
@@ -425,7 +421,7 @@ func TestClient_Request_ProblemReport(t *testing.T) {
 				},
 			})
 			mock.sendToClient(phoenixMessage{
-				Topic:   "plugin:lobby",
+				Topic:   "plugins:did:web:alice",
 				Event:   "message",
 				Payload: resp,
 			})
@@ -480,26 +476,24 @@ func TestClient_Request_WithParentThread(t *testing.T) {
 			return
 		}
 		if msg.Event == "message" {
-			var envelope struct {
-				Plaintext struct {
-					ThID  string `json:"thid"`
-					PThID string `json:"pthid"`
-				} `json:"plaintext"`
+			var outbound struct {
+				ThID  string `json:"thid"`
+				PThID string `json:"pthid"`
 			}
-			json.Unmarshal(msg.Payload, &envelope)
-			sentPthid = envelope.Plaintext.PThID
+			json.Unmarshal(msg.Payload, &outbound)
+			sentPthid = outbound.PThID
 
 			// Send response
 			resp, _ := json.Marshal(map[string]interface{}{
 				"plaintext": map[string]interface{}{
 					"id":   "resp-1",
 					"type": "https://layr8.io/protocols/echo/1.0/response",
-					"thid": envelope.Plaintext.ThID,
+					"thid": outbound.ThID,
 					"body": map[string]string{},
 				},
 			})
 			mock.sendToClient(phoenixMessage{
-				Topic:   "plugin:lobby",
+				Topic:   "plugins:did:web:alice",
 				Event:   "message",
 				Payload: resp,
 			})
@@ -661,25 +655,23 @@ func TestClient_InboundHandler_ResponseAutoFill(t *testing.T) {
 	var responseFound bool
 	for _, msg := range received {
 		if msg.Event == "message" {
-			var envelope struct {
-				Plaintext struct {
-					Type string   `json:"type"`
-					To   []string `json:"to"`
-					From string   `json:"from"`
-					ThID string   `json:"thid"`
-				} `json:"plaintext"`
+			var outbound struct {
+				Type string   `json:"type"`
+				To   []string `json:"to"`
+				From string   `json:"from"`
+				ThID string   `json:"thid"`
 			}
-			json.Unmarshal(msg.Payload, &envelope)
-			if envelope.Plaintext.Type == "https://layr8.io/protocols/echo/1.0/response" {
+			json.Unmarshal(msg.Payload, &outbound)
+			if outbound.Type == "https://layr8.io/protocols/echo/1.0/response" {
 				responseFound = true
-				if envelope.Plaintext.From != "did:web:alice" {
-					t.Errorf("response From = %q, want auto-filled %q", envelope.Plaintext.From, "did:web:alice")
+				if outbound.From != "did:web:alice" {
+					t.Errorf("response From = %q, want auto-filled %q", outbound.From, "did:web:alice")
 				}
-				if len(envelope.Plaintext.To) != 1 || envelope.Plaintext.To[0] != "did:web:bob" {
-					t.Errorf("response To = %v, want auto-filled [did:web:bob]", envelope.Plaintext.To)
+				if len(outbound.To) != 1 || outbound.To[0] != "did:web:bob" {
+					t.Errorf("response To = %v, want auto-filled [did:web:bob]", outbound.To)
 				}
-				if envelope.Plaintext.ThID != "thread-abc" {
-					t.Errorf("response thid = %q, want auto-filled %q", envelope.Plaintext.ThID, "thread-abc")
+				if outbound.ThID != "thread-abc" {
+					t.Errorf("response thid = %q, want auto-filled %q", outbound.ThID, "thread-abc")
 				}
 			}
 		}
@@ -729,13 +721,11 @@ func TestClient_InboundHandler_ErrorSendsProblemReport(t *testing.T) {
 	var problemReportFound bool
 	for _, msg := range received {
 		if msg.Event == "message" {
-			var envelope struct {
-				Plaintext struct {
-					Type string `json:"type"`
-				} `json:"plaintext"`
+			var outbound struct {
+				Type string `json:"type"`
 			}
-			json.Unmarshal(msg.Payload, &envelope)
-			if envelope.Plaintext.Type == "https://didcomm.org/report-problem/2.0/problem-report" {
+			json.Unmarshal(msg.Payload, &outbound)
+			if outbound.Type == "https://didcomm.org/report-problem/2.0/problem-report" {
 				problemReportFound = true
 			}
 		}
@@ -761,26 +751,24 @@ func TestClient_ConcurrentRequests(t *testing.T) {
 			return
 		}
 		if msg.Event == "message" {
-			var envelope struct {
-				Plaintext struct {
-					ThID string `json:"thid"`
-					Body struct {
-						Index int `json:"index"`
-					} `json:"body"`
-				} `json:"plaintext"`
+			var outbound struct {
+				ThID string `json:"thid"`
+				Body struct {
+					Index int `json:"index"`
+				} `json:"body"`
 			}
-			json.Unmarshal(msg.Payload, &envelope)
+			json.Unmarshal(msg.Payload, &outbound)
 
 			resp, _ := json.Marshal(map[string]interface{}{
 				"plaintext": map[string]interface{}{
 					"id":   generateID(),
 					"type": "https://layr8.io/protocols/echo/1.0/response",
-					"thid": envelope.Plaintext.ThID,
-					"body": map[string]interface{}{"index": envelope.Plaintext.Body.Index},
+					"thid": outbound.ThID,
+					"body": map[string]interface{}{"index": outbound.Body.Index},
 				},
 			})
 			mock.sendToClient(phoenixMessage{
-				Topic:   "plugin:lobby",
+				Topic:   "plugins:did:web:alice",
 				Event:   "message",
 				Payload: resp,
 			})

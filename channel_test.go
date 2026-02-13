@@ -14,6 +14,7 @@ import (
 )
 
 // mockPhoenixServer simulates a Layr8 cloud-node for testing.
+// Uses Phoenix V2 JSON array format: [join_ref, ref, topic, event, payload].
 type mockPhoenixServer struct {
 	upgrader websocket.Upgrader
 	mu       sync.Mutex
@@ -42,8 +43,10 @@ func (s *mockPhoenixServer) handler(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return
 		}
-		var msg phoenixMessage
-		json.Unmarshal(data, &msg)
+		msg, err := unmarshalPhoenixMsg(data)
+		if err != nil {
+			continue
+		}
 
 		s.mu.Lock()
 		s.received = append(s.received, msg)
@@ -60,7 +63,7 @@ func (s *mockPhoenixServer) sendToClient(msg phoenixMessage) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.conn != nil {
-		data, _ := json.Marshal(msg)
+		data, _ := marshalPhoenixMsg(msg)
 		s.conn.WriteMessage(websocket.TextMessage, data)
 	}
 }
@@ -207,9 +210,9 @@ func TestPhoenixChannel_ReceiveMessage(t *testing.T) {
 	ch.connect(ctx, []string{})
 	defer ch.close()
 
-	// Server sends a message to client
+	// Server sends a message to client (topic must match channel's topic)
 	mock.sendToClient(phoenixMessage{
-		Topic:   "plugin:lobby",
+		Topic:   ch.topic,
 		Event:   "message",
 		Payload: json.RawMessage(`{"plaintext":{"id":"msg-1","type":"test","body":{}}}`),
 	})
