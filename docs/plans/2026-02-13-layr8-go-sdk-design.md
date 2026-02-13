@@ -18,8 +18,8 @@ Everything else (Phoenix Channel, WebSocket, heartbeat, correlation map) is inte
 ## Package Structure
 
 ```
-layr8-go-sdk/
-├── go.mod                  # module github.com/layr8/layr8-go-sdk
+go-sdk/
+├── go.mod                  # module github.com/layr8/go-sdk
 ├── client.go               # Client struct, NewClient, Connect, Close, Send, Request
 ├── config.go               # Config struct, env-var loading
 ├── message.go              # Message, MessageContext structs, marshaling
@@ -348,7 +348,7 @@ import (
     "os"
     "os/signal"
 
-    "github.com/layr8/layr8-go-sdk"
+    "github.com/layr8/go-sdk"
 )
 
 type EchoRequest struct {
@@ -408,7 +408,7 @@ import (
     "os"
     "os/signal"
 
-    "github.com/layr8/layr8-go-sdk"
+    "github.com/layr8/go-sdk"
 )
 
 type ChatMessage struct {

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go 1.22+, `github.com/gorilla/websocket`, `github.com/google/uuid`, standard library for everything else.
 
-**Design document:** `docs/plans/2026-02-13-layr8-go-sdk-design.md`
+**Design document:** `docs/plans/2026-02-13-go-sdk-design.md`
 
 **Reference implementations:**
 - Postgres agent: `/Users/kaijiezhan/Developments/layr8-demos/` (search for `postgres-agent`)
@@ -26,8 +26,8 @@
 **Step 1: Initialize Go module**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
-go mod init github.com/layr8/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
+go mod init github.com/layr8/go-sdk
 ```
 
 **Step 2: Create package doc file**
@@ -72,7 +72,7 @@ package layr8
 **Step 3: Add dependencies**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 go get github.com/gorilla/websocket
 go get github.com/google/uuid
 ```
@@ -80,7 +80,7 @@ go get github.com/google/uuid
 **Step 4: Verify module compiles**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 go build ./...
 ```
 Expected: success (no errors)
@@ -88,10 +88,10 @@ Expected: success (no errors)
 **Step 5: Initialize git and commit**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 git init
 git add go.mod go.sum doc.go
-git commit -m "feat: initialize layr8-go-sdk module"
+git commit -m "feat: initialize go-sdk module"
 ```
 
 ---
@@ -179,7 +179,7 @@ func TestSentinelErrors(t *testing.T) {
 **Step 2: Run tests to verify they fail**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 go test ./... -v -run TestProblemReport
 ```
 Expected: FAIL — types not defined
@@ -227,7 +227,7 @@ func (e *ConnectionError) Error() string {
 **Step 4: Run tests to verify they pass**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 go test ./... -v
 ```
 Expected: PASS
@@ -235,7 +235,7 @@ Expected: PASS
 **Step 5: Commit**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 git add errors.go errors_test.go
 git commit -m "feat: add error types — ProblemReportError, ConnectionError, sentinels"
 ```
@@ -444,7 +444,7 @@ func TestMessage_Ack_Noop_WhenNoFn(t *testing.T) {
 **Step 2: Run tests to verify they fail**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 go test ./... -v -run TestMessage
 ```
 Expected: FAIL — types not defined
@@ -616,7 +616,7 @@ func parseDIDComm(data json.RawMessage) (*Message, error) {
 **Step 4: Run tests to verify they pass**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 go test ./... -v
 ```
 Expected: ALL PASS
@@ -624,7 +624,7 @@ Expected: ALL PASS
 **Step 5: Commit**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 git add message.go message_test.go
 git commit -m "feat: add Message struct with DIDComm marshal/unmarshal and MessageContext"
 ```
@@ -742,7 +742,7 @@ func TestResolveConfig_EmptyAgentDID_IsAllowed(t *testing.T) {
 **Step 2: Run tests to verify they fail**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 go test ./... -v -run TestResolveConfig
 ```
 Expected: FAIL
@@ -800,7 +800,7 @@ func resolveConfig(cfg Config) (Config, error) {
 **Step 4: Run tests to verify they pass**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 go test ./... -v
 ```
 Expected: ALL PASS
@@ -808,7 +808,7 @@ Expected: ALL PASS
 **Step 5: Commit**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 git add config.go config_test.go
 git commit -m "feat: add Config struct with env-var fallback and validation"
 ```
@@ -863,7 +863,7 @@ func TestRequestDefaults(t *testing.T) {
 **Step 2: Run tests to verify they fail**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 go test ./... -v -run "TestWith|TestHandler|TestRequest"
 ```
 Expected: FAIL
@@ -917,7 +917,7 @@ func WithParentThread(pthid string) RequestOption {
 **Step 4: Run tests to verify they pass**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 go test ./... -v
 ```
 Expected: ALL PASS
@@ -925,7 +925,7 @@ Expected: ALL PASS
 **Step 5: Commit**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 git add options.go options_test.go
 git commit -m "feat: add handler and request options — WithManualAck, WithParentThread"
 ```
@@ -1073,7 +1073,7 @@ func TestDeriveProtocol(t *testing.T) {
 **Step 2: Run tests to verify they fail**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 go test ./... -v -run "TestHandler|TestDerive"
 ```
 Expected: FAIL
@@ -1171,7 +1171,7 @@ func deriveProtocol(msgType string) string {
 **Step 4: Run tests to verify they pass**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 go test ./... -v
 ```
 Expected: ALL PASS
@@ -1179,7 +1179,7 @@ Expected: ALL PASS
 **Step 5: Commit**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 git add handler.go handler_test.go
 git commit -m "feat: add handler registry with protocol auto-derivation"
 ```
@@ -1235,7 +1235,7 @@ type transport interface {
 **Step 2: Verify module still compiles**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 go build ./...
 ```
 Expected: success
@@ -1243,7 +1243,7 @@ Expected: success
 **Step 3: Commit**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 git add transport.go
 git commit -m "feat: add internal transport interface for WebSocket/QUIC abstraction"
 ```
@@ -1580,7 +1580,7 @@ func TestPhoenixChannel_AssignedDID(t *testing.T) {
 **Step 2: Run tests to verify they fail**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 go test ./... -v -run TestPhoenixChannel
 ```
 Expected: FAIL — types not defined
@@ -1904,7 +1904,7 @@ pendingJoin chan json.RawMessage
 **Step 4: Run tests to verify they pass**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 go test ./... -v -run TestPhoenixChannel
 ```
 Expected: ALL PASS
@@ -1912,7 +1912,7 @@ Expected: ALL PASS
 **Step 5: Commit**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 git add channel.go channel_test.go
 git commit -m "feat: add Phoenix Channel transport — connect, join, send, ack, heartbeat"
 ```
@@ -1994,7 +1994,7 @@ func TestBackoff_Reset(t *testing.T) {
 **Step 2: Run tests to verify they fail**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 go test ./... -v -run TestBackoff
 ```
 Expected: FAIL
@@ -2042,7 +2042,7 @@ func (b *backoff) reset() {
 **Step 4: Run tests to verify they pass**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 go test ./... -v
 ```
 Expected: ALL PASS
@@ -2050,7 +2050,7 @@ Expected: ALL PASS
 **Step 5: Commit**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 git add reconnect.go reconnect_test.go
 git commit -m "feat: add exponential backoff for reconnect logic"
 ```
@@ -2255,7 +2255,7 @@ func TestClient_OnReconnect(t *testing.T) {
 **Step 2: Run tests to verify they fail**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 go test ./... -v -run "TestNewClient|TestClient_"
 ```
 Expected: FAIL
@@ -2517,7 +2517,7 @@ func generateID() string {
 **Step 4: Run tests to verify they pass**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 go test ./... -v
 ```
 Expected: ALL PASS
@@ -2525,7 +2525,7 @@ Expected: ALL PASS
 **Step 5: Commit**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 git add client.go client_test.go message.go
 git commit -m "feat: add Client with NewClient, Connect, Close, Handle, inbound message routing"
 ```
@@ -2893,7 +2893,7 @@ func TestClient_Request_WithParentThread(t *testing.T) {
 **Step 2: Run tests to verify they fail**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 go test ./... -v -run "TestClient_Send|TestClient_Request"
 ```
 Expected: FAIL — Send and Request methods not defined
@@ -2981,7 +2981,7 @@ func (c *Client) Request(ctx context.Context, msg *Message, opts ...RequestOptio
 **Step 4: Run tests to verify they pass**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 go test ./... -v
 ```
 Expected: ALL PASS
@@ -2989,7 +2989,7 @@ Expected: ALL PASS
 **Step 5: Commit**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 git add client.go client_test.go
 git commit -m "feat: add Send (fire-and-forget) and Request (request/response with correlation)"
 ```
@@ -3222,7 +3222,7 @@ func TestClient_InboundHandler_ErrorSendsProblemReport(t *testing.T) {
 **Step 2: Run integration tests**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 go test ./... -v -run "TestClient_Inbound"
 ```
 Expected: ALL PASS (if Tasks 2-11 are complete)
@@ -3230,7 +3230,7 @@ Expected: ALL PASS (if Tasks 2-11 are complete)
 **Step 3: Commit**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 git add client_test.go
 git commit -m "test: add integration tests for inbound handler routing, auto-ack, and problem reports"
 ```
@@ -3345,7 +3345,7 @@ func TestClient_ConcurrentRequests(t *testing.T) {
 **Step 2: Run concurrency test**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 go test ./... -v -run TestClient_ConcurrentRequests -race
 ```
 Expected: PASS with no race conditions
@@ -3353,7 +3353,7 @@ Expected: PASS with no race conditions
 **Step 3: Commit**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 git add client_test.go
 git commit -m "test: add concurrent request fan-out test with race detection"
 ```
@@ -3369,7 +3369,7 @@ git commit -m "test: add concurrent request fan-out test with race detection"
 **Step 1: Run full test suite**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 go test ./... -v -race -count=1
 ```
 Expected: ALL PASS
@@ -3377,7 +3377,7 @@ Expected: ALL PASS
 **Step 2: Run go vet**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 go vet ./...
 ```
 Expected: no issues
@@ -3385,7 +3385,7 @@ Expected: no issues
 **Step 3: Add examples to git and final commit**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 git add examples/ docs/
 git commit -m "docs: add examples for echo-agent, chat, postgres-agent, and http-agent"
 ```
@@ -3393,7 +3393,7 @@ git commit -m "docs: add examples for echo-agent, chat, postgres-agent, and http
 **Step 4: Final integration commit**
 
 ```bash
-cd /Users/kaijiezhan/Developments/layr8-go-sdk
+cd /Users/kaijiezhan/Developments/go-sdk
 git log --oneline
 ```
 
@@ -3412,5 +3412,5 @@ feat: add handler and request options — WithManualAck, WithParentThread
 feat: add Config struct with env-var fallback and validation
 feat: add Message struct with DIDComm marshal/unmarshal and MessageContext
 feat: add error types — ProblemReportError, ConnectionError, sentinels
-feat: initialize layr8-go-sdk module
+feat: initialize go-sdk module
 ```

@@ -10,7 +10,7 @@ import (
 	"os"
 	"os/signal"
 
-	layr8 "github.com/layr8/layr8-go-sdk"
+	layr8 "github.com/layr8/go-sdk"
 )
 
 type EchoRequest struct {

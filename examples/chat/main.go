@@ -18,7 +18,7 @@ import (
 	"os/signal"
 	"strings"
 
-	layr8 "github.com/layr8/layr8-go-sdk"
+	layr8 "github.com/layr8/go-sdk"
 )
 
 type ChatMessage struct {

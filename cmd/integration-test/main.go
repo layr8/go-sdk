@@ -17,7 +17,7 @@ import (
 	"os"
 	"time"
 
-	layr8 "github.com/layr8/layr8-go-sdk"
+	layr8 "github.com/layr8/go-sdk"
 )
 
 const (
