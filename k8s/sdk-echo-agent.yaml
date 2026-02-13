@@ -6,7 +6,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: sdk-echo-alice
-  namespace: quic-test
+  namespace: sdk-echo
 spec:
   replicas: 1
   strategy:
@@ -44,7 +44,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: sdk-echo-bob
-  namespace: quic-test
+  namespace: sdk-echo
 spec:
   replicas: 1
   strategy:
