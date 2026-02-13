@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -741,5 +742,100 @@ func TestClient_InboundHandler_ErrorSendsProblemReport(t *testing.T) {
 	}
 	if !problemReportFound {
 		t.Error("handler error should result in a problem report being sent")
+	}
+}
+
+func TestClient_ConcurrentRequests(t *testing.T) {
+	mock, _, wsURL := setupMockServer(t)
+
+	// Server echoes back each request with matching thid
+	mock.onMsg = func(msg phoenixMessage) {
+		if msg.Event == "phx_join" {
+			mock.sendToClient(phoenixMessage{
+				JoinRef: msg.Ref,
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"ok","response":{}}`),
+			})
+			return
+		}
+		if msg.Event == "message" {
+			var envelope struct {
+				Plaintext struct {
+					ThID string `json:"thid"`
+					Body struct {
+						Index int `json:"index"`
+					} `json:"body"`
+				} `json:"plaintext"`
+			}
+			json.Unmarshal(msg.Payload, &envelope)
+
+			resp, _ := json.Marshal(map[string]interface{}{
+				"plaintext": map[string]interface{}{
+					"id":   generateID(),
+					"type": "https://layr8.io/protocols/echo/1.0/response",
+					"thid": envelope.Plaintext.ThID,
+					"body": map[string]interface{}{"index": envelope.Plaintext.Body.Index},
+				},
+			})
+			mock.sendToClient(phoenixMessage{
+				Topic:   "plugin:lobby",
+				Event:   "message",
+				Payload: resp,
+			})
+		}
+	}
+
+	client, _ := NewClient(Config{
+		NodeURL:  wsURL,
+		APIKey:   "test-key",
+		AgentDID: "did:web:alice",
+	})
+	client.Handle("https://layr8.io/protocols/echo/1.0/request",
+		func(msg *Message) (*Message, error) { return nil, nil },
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client.Connect(ctx)
+	defer client.Close()
+
+	// Fan out 10 concurrent requests
+	const n = 10
+	results := make([]*Message, n)
+	errs := make([]error, n)
+
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			resp, err := client.Request(ctx, &Message{
+				Type: "https://layr8.io/protocols/echo/1.0/request",
+				To:   []string{"did:web:bob"},
+				Body: map[string]int{"index": idx},
+			})
+			results[idx] = resp
+			errs[idx] = err
+		}(i)
+	}
+	wg.Wait()
+
+	for i := 0; i < n; i++ {
+		if errs[i] != nil {
+			t.Errorf("Request[%d] error: %v", i, errs[i])
+			continue
+		}
+		if results[i] == nil {
+			t.Errorf("Request[%d] returned nil", i)
+			continue
+		}
+		var body map[string]interface{}
+		results[i].UnmarshalBody(&body)
+		idx, ok := body["index"].(float64)
+		if !ok || int(idx) != i {
+			t.Errorf("Request[%d] got index %v, want %d", i, body["index"], i)
+		}
 	}
 }
