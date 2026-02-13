@@ -3,6 +3,7 @@ package layr8
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 )
 
@@ -208,6 +209,79 @@ func (c *Client) sendProblemReport(original *Message, handlerErr error) {
 		},
 	}
 	c.sendMessage(report)
+}
+
+// Send sends a fire-and-forget message. Returns once the message is written to the connection.
+func (c *Client) Send(ctx context.Context, msg *Message) error {
+	c.mu.Lock()
+	if !c.connected {
+		c.mu.Unlock()
+		return ErrNotConnected
+	}
+	c.mu.Unlock()
+
+	if msg.ID == "" {
+		msg.ID = generateID()
+	}
+	if msg.From == "" {
+		msg.From = c.agentDID
+	}
+
+	return c.sendMessage(msg)
+}
+
+// Request sends a message and blocks until a correlated response arrives or the context expires.
+func (c *Client) Request(ctx context.Context, msg *Message, opts ...RequestOption) (*Message, error) {
+	c.mu.Lock()
+	if !c.connected {
+		c.mu.Unlock()
+		return nil, ErrNotConnected
+	}
+	c.mu.Unlock()
+
+	o := requestDefaults()
+	for _, opt := range opts {
+		opt(&o)
+	}
+
+	if msg.ID == "" {
+		msg.ID = generateID()
+	}
+	if msg.From == "" {
+		msg.From = c.agentDID
+	}
+	if msg.ThreadID == "" {
+		msg.ThreadID = generateID()
+	}
+	if o.parentThreadID != "" {
+		msg.ParentThreadID = o.parentThreadID
+	}
+
+	// Register response channel
+	respCh := make(chan *Message, 1)
+	c.pending.Store(msg.ThreadID, respCh)
+	defer c.pending.Delete(msg.ThreadID)
+
+	// Send the message
+	if err := c.sendMessage(msg); err != nil {
+		return nil, err
+	}
+
+	// Wait for response or timeout
+	select {
+	case resp := <-respCh:
+		// Check if response is a problem report
+		if resp.Type == "https://didcomm.org/report-problem/2.0/problem-report" {
+			var prob ProblemReportError
+			if err := resp.UnmarshalBody(&prob); err != nil {
+				return nil, fmt.Errorf("failed to parse problem report: %w", err)
+			}
+			return nil, &prob
+		}
+		return resp, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func (c *Client) sendMessage(msg *Message) error {
