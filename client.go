@@ -2,7 +2,6 @@ package layr8
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sync"
 )
@@ -116,6 +115,12 @@ func (c *Client) Close() error {
 		return c.transport.close()
 	}
 	return nil
+}
+
+// DID returns the agent's DID — either the one provided in Config
+// or the ephemeral DID assigned by the cloud-node on Connect.
+func (c *Client) DID() string {
+	return c.agentDID
 }
 
 // OnDisconnect registers a callback invoked when the connection drops.
@@ -297,10 +302,8 @@ func (c *Client) sendMessage(msg *Message) error {
 		return err
 	}
 
-	// Wrap in plaintext envelope for sending
-	envelope, _ := json.Marshal(map[string]json.RawMessage{
-		"plaintext": data,
-	})
-
-	return c.transport.send("message", envelope)
+	// Send DIDComm message directly as the payload (no envelope wrapper).
+	// The node wraps inbound messages in context+plaintext, but outbound
+	// messages are sent as bare DIDComm JSON.
+	return c.transport.send("message", data)
 }
