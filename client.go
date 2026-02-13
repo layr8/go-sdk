@@ -1,0 +1,232 @@
+package layr8
+
+import (
+	"context"
+	"encoding/json"
+	"sync"
+)
+
+// Client is the main entry point for interacting with the Layr8 platform.
+type Client struct {
+	cfg       Config
+	transport transport
+	registry  *handlerRegistry
+
+	connected bool
+	closed    bool
+	mu        sync.Mutex
+
+	agentDID string // resolved DID (explicit or assigned by node)
+
+	// Correlation map for Request/Response pattern
+	pending sync.Map // threadID -> chan *Message
+
+	disconnectFn func(error)
+	reconnectFn  func()
+}
+
+// NewClient creates a new Layr8 client with the given configuration.
+// The client is not connected until Connect() is called.
+func NewClient(cfg Config) (*Client, error) {
+	resolved, err := resolveConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Client{
+		cfg:      resolved,
+		registry: newHandlerRegistry(),
+		agentDID: resolved.AgentDID,
+	}, nil
+}
+
+// Handle registers a handler for the given DIDComm message type.
+// Handlers must be registered before Connect(). The protocol base URI
+// is automatically derived and registered with the cloud-node on Connect().
+func (c *Client) Handle(msgType string, fn HandlerFunc, opts ...HandlerOption) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.connected {
+		return ErrAlreadyConnected
+	}
+
+	return c.registry.register(msgType, fn, opts...)
+}
+
+// Connect establishes the WebSocket connection and joins the Phoenix Channel
+// with the protocols derived from registered handlers.
+func (c *Client) Connect(ctx context.Context) error {
+	c.mu.Lock()
+	if c.connected {
+		c.mu.Unlock()
+		return ErrAlreadyConnected
+	}
+	if c.closed {
+		c.mu.Unlock()
+		return ErrClientClosed
+	}
+	c.mu.Unlock()
+
+	protocols := c.registry.protocols()
+
+	ch := newPhoenixChannel(c.cfg.NodeURL, c.cfg.APIKey, c.cfg.AgentDID)
+
+	// Wire up message handler
+	ch.setMessageHandler(c.handleInboundMessage)
+
+	// Wire up disconnect/reconnect callbacks
+	if c.disconnectFn != nil {
+		ch.onDisconnect(c.disconnectFn)
+	}
+	if c.reconnectFn != nil {
+		ch.onReconnect(c.reconnectFn)
+	}
+
+	if err := ch.connect(ctx, protocols); err != nil {
+		return err
+	}
+
+	// If no DID was provided, use the one assigned by the node
+	if c.agentDID == "" && ch.assignedDID() != "" {
+		c.agentDID = ch.assignedDID()
+	}
+
+	c.mu.Lock()
+	c.transport = ch
+	c.connected = true
+	c.mu.Unlock()
+
+	return nil
+}
+
+// Close gracefully shuts down the client connection.
+func (c *Client) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closed {
+		return nil
+	}
+	c.closed = true
+	c.connected = false
+
+	if c.transport != nil {
+		return c.transport.close()
+	}
+	return nil
+}
+
+// OnDisconnect registers a callback invoked when the connection drops.
+func (c *Client) OnDisconnect(fn func(error)) {
+	c.disconnectFn = fn
+}
+
+// OnReconnect registers a callback invoked when the connection is restored.
+func (c *Client) OnReconnect(fn func()) {
+	c.reconnectFn = fn
+}
+
+// handleInboundMessage is called by the transport for each inbound "message" event.
+func (c *Client) handleInboundMessage(payload []byte) {
+	msg, err := parseDIDComm(payload)
+	if err != nil {
+		return // silently drop unparseable messages
+	}
+
+	// Check if this is a response to a pending Request (by thread ID)
+	if msg.ThreadID != "" {
+		if ch, ok := c.pending.LoadAndDelete(msg.ThreadID); ok {
+			respCh := ch.(chan *Message)
+			select {
+			case respCh <- msg:
+			default:
+			}
+			return
+		}
+	}
+
+	// Route to registered handler
+	entry, ok := c.registry.lookup(msg.Type)
+	if !ok {
+		return // no handler registered for this type
+	}
+
+	// Auto-ack before handler (unless manual ack)
+	if !entry.manualAck {
+		c.transport.sendAck([]string{msg.ID})
+	} else {
+		// Set up manual ack function
+		msg.ackFn = func(id string) {
+			c.transport.sendAck([]string{id})
+		}
+	}
+
+	// Run handler asynchronously
+	go c.runHandler(entry, msg)
+}
+
+func (c *Client) runHandler(entry handlerEntry, msg *Message) {
+	resp, err := entry.fn(msg)
+
+	if err != nil {
+		// Send problem report
+		c.sendProblemReport(msg, err)
+		return
+	}
+
+	if resp != nil {
+		// Auto-fill response fields
+		if resp.From == "" {
+			resp.From = c.agentDID
+		}
+		if len(resp.To) == 0 && msg.From != "" {
+			resp.To = []string{msg.From}
+		}
+		if resp.ThreadID == "" && msg.ThreadID != "" {
+			resp.ThreadID = msg.ThreadID
+		} else if resp.ThreadID == "" {
+			resp.ThreadID = msg.ID
+		}
+
+		c.sendMessage(resp)
+	}
+}
+
+func (c *Client) sendProblemReport(original *Message, handlerErr error) {
+	threadID := original.ThreadID
+	if threadID == "" {
+		threadID = original.ID
+	}
+	report := &Message{
+		Type:     "https://didcomm.org/report-problem/2.0/problem-report",
+		To:       []string{original.From},
+		ThreadID: threadID,
+		Body: &ProblemReportError{
+			Code:    "e.p.xfer.cant-process",
+			Comment: handlerErr.Error(),
+		},
+	}
+	c.sendMessage(report)
+}
+
+func (c *Client) sendMessage(msg *Message) error {
+	if msg.ID == "" {
+		msg.ID = generateID()
+	}
+	if msg.From == "" {
+		msg.From = c.agentDID
+	}
+
+	data, err := marshalDIDComm(msg)
+	if err != nil {
+		return err
+	}
+
+	// Wrap in plaintext envelope for sending
+	envelope, _ := json.Marshal(map[string]json.RawMessage{
+		"plaintext": data,
+	})
+
+	return c.transport.send("message", envelope)
+}
