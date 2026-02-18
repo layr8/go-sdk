@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -126,8 +128,17 @@ func (c *phoenixChannel) connect(ctx context.Context, protocols []string) error 
 	u.RawQuery = q.Encode()
 
 	// Connect WebSocket
+	// Use a custom dialer that resolves *.localhost to loopback (RFC 6761).
+	// Go's net package doesn't implement this, unlike curl and browsers.
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
+		NetDialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err == nil && isLocalhost(host) {
+				addr = net.JoinHostPort("127.0.0.1", port)
+			}
+			return (&net.Dialer{}).DialContext(ctx, network, addr)
+		},
 	}
 	conn, _, err := dialer.DialContext(ctx, u.String(), nil)
 	if err != nil {
@@ -373,4 +384,10 @@ func (c *phoenixChannel) writeMsg(msg phoenixMessage) error {
 		return err
 	}
 	return c.conn.WriteMessage(websocket.TextMessage, data)
+}
+
+// isLocalhost returns true if host is "localhost" or a subdomain of it.
+// Per RFC 6761, *.localhost should resolve to loopback.
+func isLocalhost(host string) bool {
+	return host == "localhost" || strings.HasSuffix(host, ".localhost")
 }
