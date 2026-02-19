@@ -60,13 +60,13 @@ func generateID() string {
 
 // didcommEnvelope is the internal DIDComm wire format for marshaling outbound messages.
 type didcommEnvelope struct {
-	ID       string          `json:"id"`
-	Type     string          `json:"type"`
-	From     string          `json:"from"`
-	To       []string        `json:"to"`
-	ThreadID string          `json:"thid,omitempty"`
-	PThID    string          `json:"pthid,omitempty"`
-	Body     json.RawMessage `json:"body"`
+	ID             string          `json:"id"`
+	Type           string          `json:"type"`
+	From           string          `json:"from"`
+	To             []string        `json:"to"`
+	ThreadID       string          `json:"thid,omitempty"`
+	ParentThreadID string          `json:"pthid,omitempty"`
+	Body           json.RawMessage `json:"body"`
 }
 
 // marshalDIDComm serializes a Message into DIDComm JSON wire format.
@@ -90,7 +90,7 @@ func marshalDIDComm(msg *Message) ([]byte, error) {
 		From:     msg.From,
 		To:       msg.To,
 		ThreadID: msg.ThreadID,
-		PThID:    msg.ParentThreadID,
+		ParentThreadID: msg.ParentThreadID,
 		Body:     bodyBytes,
 	}
 	return json.Marshal(env)
