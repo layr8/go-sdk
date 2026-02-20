@@ -5,14 +5,15 @@
 //	LAYR8_NODE_URL  — WebSocket URL of the cloud-node
 //	LAYR8_API_KEY   — API key for authentication
 //	LAYR8_AGENT_DID — DID for this agent
-//	PEER_DID        — (optional) DID of the peer agent to ping every 10s
+//	PEER_DIDS       — (optional) comma-separated DIDs to ping every 10s
+//	PEER_DID        — (optional) single DID to ping (backward compat, merged into PEER_DIDS)
 //
 // Usage:
 //
 //	LAYR8_NODE_URL=ws://localhost:4000/plugin_socket/websocket \
 //	LAYR8_API_KEY=alice_abcd1234_testkeyalicetestkeyali24 \
-//	LAYR8_AGENT_DID=did:web:alice-test.localhost:sdk-echo \
-//	PEER_DID=did:web:bob-test.localhost:sdk-echo \
+//	LAYR8_AGENT_DID=did:web:alice-test.localhost:sdk-echo-go \
+//	PEER_DIDS=did:web:bob-test.localhost:sdk-echo-node,did:web:alice-test.localhost:sdk-echo-py \
 //	  go run ./examples/echo-agent
 package main
 
@@ -22,6 +23,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"time"
 
 	layr8 "github.com/layr8/go-sdk"
@@ -99,9 +101,9 @@ func runAgent(ctx context.Context) error {
 
 	log.Printf("echo agent running (DID=%s)", client.DID())
 
-	if peerDID := os.Getenv("PEER_DID"); peerDID != "" {
-		log.Printf("will ping %s every 10s", peerDID)
-		go pingLoop(runCtx, client, peerDID)
+	for _, peer := range parsePeerDIDs() {
+		log.Printf("will ping %s every 10s", peer)
+		go pingLoop(runCtx, client, peer)
 	}
 
 	select {
@@ -112,7 +114,49 @@ func runAgent(ctx context.Context) error {
 	}
 }
 
+func parsePeerDIDs() []string {
+	var peers []string
+	if dids := os.Getenv("PEER_DIDS"); dids != "" {
+		for _, d := range strings.Split(dids, ",") {
+			d = strings.TrimSpace(d)
+			if d != "" {
+				peers = append(peers, d)
+			}
+		}
+	}
+	// Backward compat: merge PEER_DID if not already present
+	if single := os.Getenv("PEER_DID"); single != "" {
+		found := false
+		for _, p := range peers {
+			if p == single {
+				found = true
+				break
+			}
+		}
+		if !found {
+			peers = append(peers, single)
+		}
+	}
+	return peers
+}
+
+// shortDID returns the last segment of a DID for compact log output.
+func shortDID(did string) string {
+	parts := strings.Split(did, ":")
+	if len(parts) > 0 {
+		return parts[len(parts)-1]
+	}
+	return did
+}
+
 func pingLoop(ctx context.Context, client *layr8.Client, peerDID string) {
+	// Wait for DID propagation across nodes before first ping
+	select {
+	case <-time.After(30 * time.Second):
+	case <-ctx.Done():
+		return
+	}
+
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
@@ -125,6 +169,7 @@ func pingLoop(ctx context.Context, client *layr8.Client, peerDID string) {
 			seq++
 			msg := fmt.Sprintf("ping #%d from %s", seq, client.DID())
 
+			start := time.Now()
 			reqCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			resp, err := client.Request(reqCtx, &layr8.Message{
 				Type: echoRequestType,
@@ -132,18 +177,19 @@ func pingLoop(ctx context.Context, client *layr8.Client, peerDID string) {
 				Body: EchoRequest{Message: msg},
 			})
 			cancel()
+			rtt := time.Since(start)
 
 			if err != nil {
-				log.Printf("ping #%d failed: %v", seq, err)
+				log.Printf("[→ %s] ping #%d failed (%s): %v", shortDID(peerDID), seq, rtt.Round(time.Millisecond), err)
 				continue
 			}
 
 			var echo EchoResponse
 			if err := resp.UnmarshalBody(&echo); err != nil {
-				log.Printf("ping #%d bad response: %v", seq, err)
+				log.Printf("[→ %s] ping #%d bad response: %v", shortDID(peerDID), seq, err)
 				continue
 			}
-			log.Printf("ping #%d reply: %q", seq, echo.Echo)
+			log.Printf("[→ %s] ping #%d reply (%s): %q", shortDID(peerDID), seq, rtt.Round(time.Millisecond), echo.Echo)
 		}
 	}
 }
