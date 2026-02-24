@@ -356,6 +356,14 @@ A database query agent with manual acknowledgment. Receives SQL query requests o
 DATABASE_URL=postgres://localhost/mydb LAYR8_API_KEY=your-key go run ./examples/postgres-agent
 ```
 
+### Durable Handler
+
+Persist-then-ack pattern: writes inbound messages to a JSON-lines file before acknowledging. If the process crashes before ack, the cloud-node redelivers. Demonstrates `WithManualAck()` with zero external dependencies.
+
+```bash
+LAYR8_API_KEY=your-key go run ./examples/durable-handler
+```
+
 ## Development
 
 ### Prerequisites
