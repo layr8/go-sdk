@@ -67,6 +67,32 @@ func TestResolveConfig_ExplicitOverridesEnv(t *testing.T) {
 	}
 }
 
+func TestResolveConfig_NormalizeHTTPS(t *testing.T) {
+	resolved, err := resolveConfig(Config{
+		NodeURL: "https://mynode.layr8.cloud/plugin_socket/websocket",
+		APIKey:  "key",
+	})
+	if err != nil {
+		t.Fatalf("resolveConfig() error: %v", err)
+	}
+	if resolved.NodeURL != "wss://mynode.layr8.cloud/plugin_socket/websocket" {
+		t.Errorf("NodeURL = %q, want https:// normalized to wss://", resolved.NodeURL)
+	}
+}
+
+func TestResolveConfig_NormalizeHTTP(t *testing.T) {
+	resolved, err := resolveConfig(Config{
+		NodeURL: "http://localhost:4000/plugin_socket/websocket",
+		APIKey:  "key",
+	})
+	if err != nil {
+		t.Fatalf("resolveConfig() error: %v", err)
+	}
+	if resolved.NodeURL != "ws://localhost:4000/plugin_socket/websocket" {
+		t.Errorf("NodeURL = %q, want http:// normalized to ws://", resolved.NodeURL)
+	}
+}
+
 func TestResolveConfig_MissingNodeURL(t *testing.T) {
 	_, err := resolveConfig(Config{APIKey: "key"})
 	if err == nil {
