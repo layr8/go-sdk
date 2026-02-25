@@ -55,7 +55,7 @@ var errorKindNames = [...]string{
 }
 
 func (k ErrorKind) String() string {
-	if int(k) < len(errorKindNames) {
+	if int(k) >= 0 && int(k) < len(errorKindNames) {
 		return errorKindNames[k]
 	}
 	return fmt.Sprintf("ErrorKind(%d)", k)
@@ -74,7 +74,10 @@ type SDKError struct {
 }
 
 func (e *SDKError) Error() string {
-	return fmt.Sprintf("%s: %v (msg=%s type=%s from=%s)", e.Kind, e.Cause, e.MessageID, e.Type, e.From)
+	if e.Cause != nil {
+		return fmt.Sprintf("%s: %v (msg=%s type=%s from=%s)", e.Kind, e.Cause, e.MessageID, e.Type, e.From)
+	}
+	return fmt.Sprintf("%s (msg=%s type=%s from=%s)", e.Kind, e.MessageID, e.Type, e.From)
 }
 
 func (e *SDKError) Unwrap() error {
