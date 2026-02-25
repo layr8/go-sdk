@@ -938,3 +938,76 @@ func TestClient_ConcurrentRequests(t *testing.T) {
 		}
 	}
 }
+
+func TestClient_OnError_HandlerPanic(t *testing.T) {
+	mock, _, wsURL := setupMockServer(t)
+
+	errCh := make(chan SDKError, 1)
+	client, _ := NewClient(Config{
+		NodeURL:  wsURL,
+		APIKey:   "test-key",
+		AgentDID: "did:web:alice",
+	}, func(e SDKError) { errCh <- e })
+
+	// Register handler that panics
+	client.Handle("https://layr8.io/protocols/echo/1.0/request",
+		func(msg *Message) (*Message, error) {
+			panic("test panic in handler")
+		},
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client.Connect(ctx)
+	defer client.Close()
+
+	// Send message that triggers the panicking handler
+	inbound, _ := json.Marshal(map[string]interface{}{
+		"plaintext": map[string]interface{}{
+			"id":   "req-panic",
+			"type": "https://layr8.io/protocols/echo/1.0/request",
+			"from": "did:web:bob",
+			"to":   []string{"did:web:alice"},
+			"body": map[string]string{"message": "trigger panic"},
+		},
+	})
+	mock.sendToClient(phoenixMessage{
+		Topic:   "plugins:did:web:alice",
+		Event:   "message",
+		Payload: inbound,
+	})
+
+	select {
+	case e := <-errCh:
+		if e.Kind != ErrHandlerPanic {
+			t.Errorf("Kind = %v, want ErrHandlerPanic", e.Kind)
+		}
+		if e.MessageID != "req-panic" {
+			t.Errorf("MessageID = %q, want %q", e.MessageID, "req-panic")
+		}
+		if e.Cause == nil {
+			t.Error("Cause should not be nil")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for onError callback")
+	}
+
+	// Verify a problem report was also sent back
+	time.Sleep(500 * time.Millisecond)
+	received := mock.getReceived()
+	var problemReportFound bool
+	for _, msg := range received {
+		if msg.Event == "message" {
+			var outbound struct {
+				Type string `json:"type"`
+			}
+			json.Unmarshal(msg.Payload, &outbound)
+			if outbound.Type == "https://didcomm.org/report-problem/2.0/problem-report" {
+				problemReportFound = true
+			}
+		}
+	}
+	if !problemReportFound {
+		t.Error("handler panic should result in a problem report being sent")
+	}
+}

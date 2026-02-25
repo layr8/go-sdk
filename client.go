@@ -196,6 +196,21 @@ func (c *Client) handleInboundMessage(payload []byte) {
 }
 
 func (c *Client) runHandler(entry handlerEntry, msg *Message) {
+	defer func() {
+		if r := recover(); r != nil {
+			err := fmt.Errorf("handler panic: %v", r)
+			c.sendProblemReport(msg, err)
+			c.onError(SDKError{
+				Kind:      ErrHandlerPanic,
+				MessageID: msg.ID,
+				Type:      msg.Type,
+				From:      msg.From,
+				Cause:     err,
+				Timestamp: time.Now(),
+			})
+		}
+	}()
+
 	resp, err := entry.fn(msg)
 
 	if err != nil {
