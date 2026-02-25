@@ -38,7 +38,7 @@ func main() {
 		NodeURL:  "ws://bob-test.localhost/plugin_socket/websocket",
 		APIKey:   "bob_efgh5678_testkeybobbtestkeybobt24",
 		AgentDID: bobDID,
-	})
+	}, layr8.LogErrors(log.Default()))
 	if err != nil {
 		log.Fatalf("failed to create client: %v", err)
 	}

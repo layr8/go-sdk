@@ -67,7 +67,7 @@ func runAgent(ctx context.Context) error {
 	runCtx, runCancel := context.WithCancel(ctx)
 	defer runCancel()
 
-	client, err := layr8.NewClient(layr8.Config{})
+	client, err := layr8.NewClient(layr8.Config{}, layr8.LogErrors(log.Default()))
 	if err != nil {
 		return fmt.Errorf("NewClient: %w", err)
 	}

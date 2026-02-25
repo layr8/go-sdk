@@ -34,7 +34,7 @@ func main() {
 
 	client, err := layr8.NewClient(layr8.Config{
 		// All fields fall back to env vars: LAYR8_NODE_URL, LAYR8_API_KEY, LAYR8_AGENT_DID
-	})
+	}, layr8.LogErrors(log.Default()))
 	if err != nil {
 		log.Fatal(err)
 	}

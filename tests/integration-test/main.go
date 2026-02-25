@@ -133,7 +133,7 @@ func main() {
 		NodeURL:  aliceNodeURL,
 		APIKey:   aliceAPIKey,
 		AgentDID: aliceDID,
-	})
+	}, layr8.LogErrors(log.Default()))
 	if err != nil {
 		log.Fatalf("  FATAL: NewClient(alice): %v", err)
 	}
@@ -193,7 +193,7 @@ func main() {
 		NodeURL:  bobNodeURL,
 		APIKey:   bobAPIKey,
 		AgentDID: bobDID,
-	})
+	}, layr8.LogErrors(log.Default()))
 	if err != nil {
 		log.Fatalf("  FATAL: NewClient(bob): %v", err)
 	}
@@ -224,7 +224,7 @@ func main() {
 		os.Unsetenv("LAYR8_AGENT_DID")
 	}()
 
-	aliceEnv, err := layr8.NewClient(layr8.Config{})
+	aliceEnv, err := layr8.NewClient(layr8.Config{}, layr8.LogErrors(log.Default()))
 	if err != nil {
 		fail("config env", fmt.Sprintf("NewClient with env vars: %v", err))
 	} else {
@@ -372,7 +372,7 @@ func main() {
 		NodeURL:  aliceNodeURL,
 		APIKey:   aliceAPIKey,
 		AgentDID: errDID,
-	})
+	}, layr8.LogErrors(log.Default()))
 	if err != nil {
 		log.Fatalf("  FATAL: NewClient(aliceErr): %v", err)
 	}
@@ -424,7 +424,7 @@ func main() {
 		NodeURL:  aliceNodeURL,
 		APIKey:   aliceAPIKey,
 		AgentDID: ackDID,
-	})
+	}, layr8.LogErrors(log.Default()))
 	if err != nil {
 		log.Fatalf("  FATAL: NewClient(aliceAck): %v", err)
 	}
@@ -494,7 +494,7 @@ func main() {
 		NodeURL:  aliceNodeURL,
 		APIKey:   aliceAPIKey,
 		AgentDID: "did:web:alice-test.localhost:notconn-test",
-	})
+	}, layr8.LogErrors(log.Default()))
 	if err != nil {
 		log.Fatalf("  FATAL: NewClient(notConn): %v", err)
 	}
