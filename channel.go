@@ -208,11 +208,16 @@ func (c *phoenixChannel) join(ctx context.Context, protocols []string) error {
 		var reply struct {
 			Status   string `json:"status"`
 			Response struct {
-				DID string `json:"did"`
+				DID    string `json:"did"`
+				Reason string `json:"reason"`
 			} `json:"response"`
 		}
 		json.Unmarshal(payload, &reply)
 		if reply.Status != "ok" {
+			reason := reply.Response.Reason
+			if reason != "" {
+				return &ConnectionError{URL: c.wsURL, Reason: reason}
+			}
 			return &ConnectionError{URL: c.wsURL, Reason: fmt.Sprintf("join rejected: %s", reply.Status)}
 		}
 		if reply.Response.DID != "" {

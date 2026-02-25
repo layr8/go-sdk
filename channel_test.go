@@ -284,6 +284,45 @@ func TestPhoenixChannel_SendAck(t *testing.T) {
 	}
 }
 
+func TestPhoenixChannel_JoinRejected_IncludesReason(t *testing.T) {
+	mock := newMockServer()
+	mock.onMsg = func(msg phoenixMessage) {
+		if msg.Event == "phx_join" {
+			mock.sendToClient(phoenixMessage{
+				JoinRef: msg.Ref,
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"error","response":{"reason":"e.connect.plugin.failed: protocols_already_bound"}}`),
+			})
+		}
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(mock.handler))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/plugin_socket/websocket"
+	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := ch.connect(ctx, []string{"https://layr8.io/protocols/echo/1.0"})
+	if err == nil {
+		ch.close()
+		t.Fatal("expected error from rejected join")
+	}
+
+	connErr, ok := err.(*ConnectionError)
+	if !ok {
+		t.Fatalf("expected *ConnectionError, got %T: %v", err, err)
+	}
+
+	if !strings.Contains(connErr.Reason, "protocols_already_bound") {
+		t.Errorf("error reason should contain server reason, got: %s", connErr.Reason)
+	}
+}
+
 func TestPhoenixChannel_AssignedDID(t *testing.T) {
 	mock := newMockServer()
 	mock.onMsg = func(msg phoenixMessage) {
