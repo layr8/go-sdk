@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 )
 
 // Client is the main entry point for interacting with the Layr8 platform.
@@ -146,7 +147,13 @@ func (c *Client) OnReconnect(fn func()) {
 func (c *Client) handleInboundMessage(payload []byte) {
 	msg, err := parseDIDComm(payload)
 	if err != nil {
-		return // silently drop unparseable messages
+		c.onError(SDKError{
+			Kind:      ErrParseFailure,
+			Raw:       payload,
+			Cause:     err,
+			Timestamp: time.Now(),
+		})
+		return
 	}
 
 	// Check if this is a response to a pending Request (by thread ID)
@@ -164,7 +171,14 @@ func (c *Client) handleInboundMessage(payload []byte) {
 	// Route to registered handler
 	entry, ok := c.registry.lookup(msg.Type)
 	if !ok {
-		return // no handler registered for this type
+		c.onError(SDKError{
+			Kind:      ErrNoHandler,
+			MessageID: msg.ID,
+			Type:      msg.Type,
+			From:      msg.From,
+			Timestamp: time.Now(),
+		})
+		return
 	}
 
 	// Auto-ack before handler (unless manual ack)

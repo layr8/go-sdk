@@ -748,6 +748,104 @@ func TestClient_InboundHandler_ErrorSendsProblemReport(t *testing.T) {
 	}
 }
 
+func TestClient_OnError_ParseFailure(t *testing.T) {
+	mock, _, wsURL := setupMockServer(t)
+
+	errCh := make(chan SDKError, 1)
+	client, _ := NewClient(Config{
+		NodeURL:  wsURL,
+		APIKey:   "test-key",
+		AgentDID: "did:web:alice",
+	}, func(e SDKError) { errCh <- e })
+
+	client.Handle("https://layr8.io/protocols/echo/1.0/request",
+		func(msg *Message) (*Message, error) { return nil, nil },
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client.Connect(ctx)
+	defer client.Close()
+
+	// Send a valid JSON payload that is not a valid DIDComm envelope
+	// (missing "plaintext" field causes parseDIDComm to fail)
+	mock.sendToClient(phoenixMessage{
+		Topic:   "plugins:did:web:alice",
+		Event:   "message",
+		Payload: json.RawMessage(`{"garbage": true}`),
+	})
+
+	select {
+	case e := <-errCh:
+		if e.Kind != ErrParseFailure {
+			t.Errorf("Kind = %v, want ErrParseFailure", e.Kind)
+		}
+		if e.Cause == nil {
+			t.Error("Cause should not be nil")
+		}
+		if e.Raw == nil {
+			t.Error("Raw should contain the unparseable payload")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for onError callback")
+	}
+}
+
+func TestClient_OnError_NoHandler(t *testing.T) {
+	mock, _, wsURL := setupMockServer(t)
+
+	errCh := make(chan SDKError, 1)
+	client, _ := NewClient(Config{
+		NodeURL:  wsURL,
+		APIKey:   "test-key",
+		AgentDID: "did:web:alice",
+	}, func(e SDKError) { errCh <- e })
+
+	// Register handler for echo, but NOT for basicmessage
+	client.Handle("https://layr8.io/protocols/echo/1.0/request",
+		func(msg *Message) (*Message, error) { return nil, nil },
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client.Connect(ctx)
+	defer client.Close()
+
+	// Send a message type with no handler
+	inbound, _ := json.Marshal(map[string]interface{}{
+		"plaintext": map[string]interface{}{
+			"id":   "msg-1",
+			"type": "https://didcomm.org/basicmessage/2.0/message",
+			"from": "did:web:bob",
+			"to":   []string{"did:web:alice"},
+			"body": map[string]string{"content": "hello"},
+		},
+	})
+	mock.sendToClient(phoenixMessage{
+		Topic:   "plugins:did:web:alice",
+		Event:   "message",
+		Payload: inbound,
+	})
+
+	select {
+	case e := <-errCh:
+		if e.Kind != ErrNoHandler {
+			t.Errorf("Kind = %v, want ErrNoHandler", e.Kind)
+		}
+		if e.MessageID != "msg-1" {
+			t.Errorf("MessageID = %q, want %q", e.MessageID, "msg-1")
+		}
+		if e.Type != "https://didcomm.org/basicmessage/2.0/message" {
+			t.Errorf("Type = %q, want basicmessage type", e.Type)
+		}
+		if e.From != "did:web:bob" {
+			t.Errorf("From = %q, want %q", e.From, "did:web:bob")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for onError callback")
+	}
+}
+
 func TestClient_ConcurrentRequests(t *testing.T) {
 	mock, _, wsURL := setupMockServer(t)
 
