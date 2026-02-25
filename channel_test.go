@@ -139,6 +139,15 @@ func TestPhoenixChannel_Send(t *testing.T) {
 				Event:   "phx_reply",
 				Payload: json.RawMessage(`{"status":"ok","response":{}}`),
 			})
+			return
+		}
+		if msg.Event == "message" {
+			mock.sendToClient(phoenixMessage{
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"ok","response":{}}`),
+			})
 		}
 	}
 
@@ -155,7 +164,7 @@ func TestPhoenixChannel_Send(t *testing.T) {
 	defer ch.close()
 
 	payload := []byte(`{"id":"msg-1","type":"test","from":"did:web:test","to":["did:web:bob"],"body":{}}`)
-	err := ch.send("message", payload)
+	_, err := ch.send(ctx, "message", payload)
 	if err != nil {
 		t.Fatalf("send() error: %v", err)
 	}
@@ -351,5 +360,169 @@ func TestPhoenixChannel_AssignedDID(t *testing.T) {
 
 	if ch.assignedDID() != "did:web:node:assigned-123" {
 		t.Errorf("assignedDID() = %q, want %q", ch.assignedDID(), "did:web:node:assigned-123")
+	}
+}
+
+func TestPhoenixChannel_Send_ServerReply(t *testing.T) {
+	mock := newMockServer()
+	mock.onMsg = func(msg phoenixMessage) {
+		if msg.Event == "phx_join" {
+			mock.sendToClient(phoenixMessage{
+				JoinRef: msg.Ref,
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"ok","response":{}}`),
+			})
+			return
+		}
+		if msg.Event == "message" {
+			// Server sends back ok reply for the message
+			mock.sendToClient(phoenixMessage{
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"ok","response":{}}`),
+			})
+		}
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(mock.handler))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/plugin_socket/websocket"
+	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ch.connect(ctx, []string{})
+	defer ch.close()
+
+	payload := []byte(`{"id":"msg-1","type":"test","from":"did:web:test","to":["did:web:bob"],"body":{}}`)
+	reply, err := ch.send(ctx, "message", payload)
+	if err != nil {
+		t.Fatalf("send() error: %v", err)
+	}
+	if reply.Status != "ok" {
+		t.Errorf("reply.Status = %q, want %q", reply.Status, "ok")
+	}
+}
+
+func TestPhoenixChannel_Send_ServerReject(t *testing.T) {
+	mock := newMockServer()
+	mock.onMsg = func(msg phoenixMessage) {
+		if msg.Event == "phx_join" {
+			mock.sendToClient(phoenixMessage{
+				JoinRef: msg.Ref,
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"ok","response":{}}`),
+			})
+			return
+		}
+		if msg.Event == "message" {
+			// Server rejects the message (e.g., authz failure)
+			mock.sendToClient(phoenixMessage{
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"error","response":{"reason":"unauthorized"}}`),
+			})
+		}
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(mock.handler))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/plugin_socket/websocket"
+	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ch.connect(ctx, []string{})
+	defer ch.close()
+
+	payload := []byte(`{"id":"msg-1","type":"test","from":"did:web:test","to":["did:web:bob"],"body":{}}`)
+	reply, err := ch.send(ctx, "message", payload)
+	if err != nil {
+		t.Fatalf("send() error: %v", err)
+	}
+	if reply.Status != "error" {
+		t.Errorf("reply.Status = %q, want %q", reply.Status, "error")
+	}
+	if reply.Reason != "unauthorized" {
+		t.Errorf("reply.Reason = %q, want %q", reply.Reason, "unauthorized")
+	}
+}
+
+func TestPhoenixChannel_Send_Timeout(t *testing.T) {
+	mock := newMockServer()
+	mock.onMsg = func(msg phoenixMessage) {
+		if msg.Event == "phx_join" {
+			mock.sendToClient(phoenixMessage{
+				JoinRef: msg.Ref,
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"ok","response":{}}`),
+			})
+		}
+		// Don't reply to messages — simulate timeout
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(mock.handler))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/plugin_socket/websocket"
+	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test")
+
+	connectCtx, connectCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer connectCancel()
+	ch.connect(connectCtx, []string{})
+	defer ch.close()
+
+	shortCtx, shortCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer shortCancel()
+
+	payload := []byte(`{"id":"msg-1","type":"test","body":{}}`)
+	_, err := ch.send(shortCtx, "message", payload)
+	if err == nil {
+		t.Fatal("send() should error on timeout")
+	}
+}
+
+func TestPhoenixChannel_SendFireAndForget(t *testing.T) {
+	mock := newMockServer()
+	mock.onMsg = func(msg phoenixMessage) {
+		if msg.Event == "phx_join" {
+			mock.sendToClient(phoenixMessage{
+				JoinRef: msg.Ref,
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"ok","response":{}}`),
+			})
+		}
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(mock.handler))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/plugin_socket/websocket"
+	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ch.connect(ctx, []string{})
+	defer ch.close()
+
+	payload := []byte(`{"id":"msg-1","type":"test","body":{}}`)
+	err := ch.sendFireAndForget("message", payload)
+	if err != nil {
+		t.Fatalf("sendFireAndForget() error: %v", err)
 	}
 }

@@ -96,6 +96,7 @@ type phoenixChannel struct {
 	joinRef    string
 
 	pendingJoin chan json.RawMessage
+	pendingRefs sync.Map // ref → chan serverReply
 
 	msgHandler   func(payload []byte)
 	disconnectFn func(error)
@@ -229,7 +230,32 @@ func (c *phoenixChannel) join(ctx context.Context, protocols []string) error {
 	}
 }
 
-func (c *phoenixChannel) send(event string, payload []byte) error {
+func (c *phoenixChannel) send(ctx context.Context, event string, payload []byte) (serverReply, error) {
+	ref := c.nextRef()
+
+	replyCh := make(chan serverReply, 1)
+	c.pendingRefs.Store(ref, replyCh)
+	defer c.pendingRefs.Delete(ref)
+
+	msg := phoenixMessage{
+		Ref:     ref,
+		Topic:   c.topic,
+		Event:   event,
+		Payload: payload,
+	}
+	if err := c.writeMsg(msg); err != nil {
+		return serverReply{}, err
+	}
+
+	select {
+	case reply := <-replyCh:
+		return reply, nil
+	case <-ctx.Done():
+		return serverReply{}, ctx.Err()
+	}
+}
+
+func (c *phoenixChannel) sendFireAndForget(event string, payload []byte) error {
 	msg := phoenixMessage{
 		Ref:     c.nextRef(),
 		Topic:   c.topic,
@@ -243,7 +269,7 @@ func (c *phoenixChannel) sendAck(ids []string) error {
 	payload, _ := json.Marshal(map[string]interface{}{
 		"ids": ids,
 	})
-	return c.send("ack", payload)
+	return c.sendFireAndForget("ack", payload)
 }
 
 func (c *phoenixChannel) setMessageHandler(fn func(payload []byte)) {
@@ -329,12 +355,30 @@ func (c *phoenixChannel) readLoop() {
 func (c *phoenixChannel) handleInbound(msg phoenixMessage) {
 	switch msg.Event {
 	case "phx_reply":
+		// Join reply
 		c.mu.Lock()
 		ch := c.pendingJoin
 		c.mu.Unlock()
 		if ch != nil && msg.Ref == c.joinRef {
 			select {
 			case ch <- msg.Payload:
+			default:
+			}
+			return
+		}
+
+		// Message send reply (ref tracking)
+		if val, ok := c.pendingRefs.LoadAndDelete(msg.Ref); ok {
+			replyCh := val.(chan serverReply)
+			var parsed struct {
+				Status   string `json:"status"`
+				Response struct {
+					Reason string `json:"reason"`
+				} `json:"response"`
+			}
+			json.Unmarshal(msg.Payload, &parsed)
+			select {
+			case replyCh <- serverReply{Status: parsed.Status, Reason: parsed.Response.Reason}:
 			default:
 			}
 		}

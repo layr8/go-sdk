@@ -343,5 +343,8 @@ func (c *Client) sendMessage(msg *Message) error {
 	// Send DIDComm message directly as the payload (no envelope wrapper).
 	// The node wraps inbound messages in context+plaintext, but outbound
 	// messages are sent as bare DIDComm JSON.
-	return c.transport.send("message", data)
+	// Uses fire-and-forget because this is called from handler goroutines
+	// where there's no caller context. Task 6 will add proper reply handling
+	// to Send() and Request().
+	return c.transport.sendFireAndForget("message", data)
 }
