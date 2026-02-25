@@ -3,6 +3,8 @@ package layr8
 import (
 	"errors"
 	"fmt"
+	"log"
+	"time"
 )
 
 // Sentinel errors for client state.
@@ -31,4 +33,61 @@ type ConnectionError struct {
 
 func (e *ConnectionError) Error() string {
 	return fmt.Sprintf("connection error [%s]: %s", e.URL, e.Reason)
+}
+
+// ErrorKind classifies SDK-level errors that cannot be returned to a caller.
+type ErrorKind int
+
+const (
+	ErrParseFailure   ErrorKind = iota // inbound message couldn't be parsed
+	ErrNoHandler                       // no handler registered for message type
+	ErrHandlerPanic                    // handler goroutine panicked
+	ErrServerReject                    // server refused a sent message (authz, routing, etc.)
+	ErrTransportWrite                  // failed to write to connection
+)
+
+var errorKindNames = [...]string{
+	ErrParseFailure:   "ErrParseFailure",
+	ErrNoHandler:      "ErrNoHandler",
+	ErrHandlerPanic:   "ErrHandlerPanic",
+	ErrServerReject:   "ErrServerReject",
+	ErrTransportWrite: "ErrTransportWrite",
+}
+
+func (k ErrorKind) String() string {
+	if int(k) < len(errorKindNames) {
+		return errorKindNames[k]
+	}
+	return fmt.Sprintf("ErrorKind(%d)", k)
+}
+
+// SDKError represents an error that the SDK could not deliver to a direct caller.
+// These errors are routed to the ErrorHandler provided at client creation.
+type SDKError struct {
+	Kind      ErrorKind
+	MessageID string
+	Type      string // DIDComm message type, if known
+	From      string // sender DID, if known
+	Cause     error
+	Raw       []byte    // raw payload (for parse failures)
+	Timestamp time.Time
+}
+
+func (e *SDKError) Error() string {
+	return fmt.Sprintf("%s: %v (msg=%s type=%s from=%s)", e.Kind, e.Cause, e.MessageID, e.Type, e.From)
+}
+
+func (e *SDKError) Unwrap() error {
+	return e.Cause
+}
+
+// ErrorHandler is called for every SDK-level error that cannot be returned
+// to a direct caller. It MUST be provided when creating a client.
+type ErrorHandler func(SDKError)
+
+// LogErrors returns an ErrorHandler that logs all SDK errors to the given logger.
+func LogErrors(logger *log.Logger) ErrorHandler {
+	return func(e SDKError) {
+		logger.Printf("[layr8] %s: %v (msg=%s type=%s from=%s)", e.Kind, e.Cause, e.MessageID, e.Type, e.From)
+	}
 }
