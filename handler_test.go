@@ -1,6 +1,7 @@
 package layr8
 
 import (
+	"encoding/json"
 	"testing"
 )
 
@@ -95,6 +96,27 @@ func TestHandlerRegistry_DeriveProtocols_DIDComm(t *testing.T) {
 	protocols := r.protocols()
 	if len(protocols) != 2 {
 		t.Fatalf("protocols() len = %d, want 2, got %v", len(protocols), protocols)
+	}
+}
+
+func TestHandlerRegistry_ProtocolsEmpty_NotNil(t *testing.T) {
+	r := newHandlerRegistry()
+	protocols := r.protocols()
+
+	if protocols == nil {
+		t.Fatal("protocols() should return non-nil empty slice, got nil")
+	}
+	if len(protocols) != 0 {
+		t.Fatalf("protocols() should return empty slice, got %v", protocols)
+	}
+
+	// Verify JSON serialization produces [] not null
+	data, err := json.Marshal(protocols)
+	if err != nil {
+		t.Fatalf("json.Marshal error: %v", err)
+	}
+	if string(data) != "[]" {
+		t.Fatalf("json.Marshal(protocols) = %s, want []", string(data))
 	}
 }
 
