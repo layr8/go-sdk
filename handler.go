@@ -61,7 +61,7 @@ func (r *handlerRegistry) protocols() []string {
 	defer r.mu.RUnlock()
 
 	seen := make(map[string]struct{})
-	var protocols []string
+	protocols := make([]string, 0)
 
 	for msgType := range r.handlers {
 		proto := deriveProtocol(msgType)
