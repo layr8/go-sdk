@@ -33,9 +33,7 @@ func main() {
 	recipients := os.Args[1:]
 
 	client, err := layr8.NewClient(layr8.Config{
-		NodeURL:  "wss://earth.node.layr8.org:443/plugin_socket/websocket",
-		AgentDID: os.Getenv("LAYR8_AGENT_DID"),
-		// APIKey loaded from LAYR8_API_KEY env
+		// All fields fall back to env vars: LAYR8_NODE_URL, LAYR8_API_KEY, LAYR8_AGENT_DID
 	})
 	if err != nil {
 		log.Fatal(err)
