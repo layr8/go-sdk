@@ -38,3 +38,22 @@ func WithParentThread(pthid string) RequestOption {
 		o.parentThreadID = pthid
 	}
 }
+
+// SendOption configures send behavior.
+type SendOption func(*sendOptions)
+
+type sendOptions struct {
+	fireAndForget bool
+}
+
+func sendDefaults() sendOptions {
+	return sendOptions{}
+}
+
+// WithFireAndForget skips waiting for server acknowledgment on Send.
+// Use this for performance-sensitive paths where you accept silent failures.
+func WithFireAndForget() SendOption {
+	return func(o *sendOptions) {
+		o.fireAndForget = true
+	}
+}

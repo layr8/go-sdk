@@ -28,6 +28,16 @@ func setupMockServer(t *testing.T) (*mockPhoenixServer, *httptest.Server, string
 				Event:   "phx_reply",
 				Payload: json.RawMessage(`{"status":"ok","response":{"did":"did:web:node:test"}}`),
 			})
+			return
+		}
+		// Reply OK to all other events (message, ack, etc.)
+		if msg.Ref != "" {
+			mock.sendToClient(phoenixMessage{
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"ok","response":{}}`),
+			})
 		}
 	}
 	server := httptest.NewServer(http.HandlerFunc(mock.handler))
@@ -308,6 +318,14 @@ func TestClient_Request_ResponseCorrelation(t *testing.T) {
 		}
 
 		if msg.Event == "message" {
+			// Server acknowledges the message
+			mock.sendToClient(phoenixMessage{
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"ok","response":{}}`),
+			})
+
 			// Parse outbound DIDComm message (bare, no plaintext wrapper)
 			var outbound struct {
 				ThID string `json:"thid"`
@@ -416,6 +434,14 @@ func TestClient_Request_ProblemReport(t *testing.T) {
 			return
 		}
 		if msg.Event == "message" {
+			// Server acknowledges the message
+			mock.sendToClient(phoenixMessage{
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"ok","response":{}}`),
+			})
+
 			var outbound struct {
 				ThID string `json:"thid"`
 			}
@@ -489,6 +515,14 @@ func TestClient_Request_WithParentThread(t *testing.T) {
 			return
 		}
 		if msg.Event == "message" {
+			// Server acknowledges the message
+			mock.sendToClient(phoenixMessage{
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"ok","response":{}}`),
+			})
+
 			var outbound struct {
 				ThID  string `json:"thid"`
 				PThID string `json:"pthid"`
@@ -862,6 +896,14 @@ func TestClient_ConcurrentRequests(t *testing.T) {
 			return
 		}
 		if msg.Event == "message" {
+			// Server acknowledges the message
+			mock.sendToClient(phoenixMessage{
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"ok","response":{}}`),
+			})
+
 			var outbound struct {
 				ThID string `json:"thid"`
 				Body struct {
@@ -936,6 +978,109 @@ func TestClient_ConcurrentRequests(t *testing.T) {
 		if !ok || int(idx) != i {
 			t.Errorf("Request[%d] got index %v, want %d", i, body["index"], i)
 		}
+	}
+}
+
+func TestClient_Send_ServerReject(t *testing.T) {
+	mock, _, wsURL := setupMockServer(t)
+
+	// Override mock to reject messages
+	mock.onMsg = func(msg phoenixMessage) {
+		if msg.Event == "phx_join" {
+			mock.sendToClient(phoenixMessage{
+				JoinRef: msg.Ref,
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"ok","response":{}}`),
+			})
+			return
+		}
+		if msg.Event == "message" {
+			mock.sendToClient(phoenixMessage{
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"error","response":{"reason":"unauthorized"}}`),
+			})
+		}
+	}
+
+	client, _ := NewClient(Config{
+		NodeURL:  wsURL,
+		APIKey:   "test-key",
+		AgentDID: "did:web:alice",
+	}, discardErrors)
+	client.Handle("https://layr8.io/protocols/echo/1.0/request",
+		func(msg *Message) (*Message, error) { return nil, nil },
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client.Connect(ctx)
+	defer client.Close()
+
+	err := client.Send(ctx, &Message{
+		Type: "https://didcomm.org/basicmessage/2.0/message",
+		To:   []string{"did:web:bob"},
+		Body: map[string]string{"content": "hello"},
+	})
+	if err == nil {
+		t.Fatal("Send() should return error when server rejects")
+	}
+	if !strings.Contains(err.Error(), "unauthorized") {
+		t.Errorf("error = %q, should contain 'unauthorized'", err.Error())
+	}
+}
+
+func TestClient_Request_ServerReject(t *testing.T) {
+	mock, _, wsURL := setupMockServer(t)
+
+	mock.onMsg = func(msg phoenixMessage) {
+		if msg.Event == "phx_join" {
+			mock.sendToClient(phoenixMessage{
+				JoinRef: msg.Ref,
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"ok","response":{}}`),
+			})
+			return
+		}
+		if msg.Event == "message" {
+			mock.sendToClient(phoenixMessage{
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"error","response":{"reason":"unauthorized"}}`),
+			})
+		}
+	}
+
+	client, _ := NewClient(Config{
+		NodeURL:  wsURL,
+		APIKey:   "test-key",
+		AgentDID: "did:web:alice",
+	}, discardErrors)
+	client.Handle("https://layr8.io/protocols/echo/1.0/request",
+		func(msg *Message) (*Message, error) { return nil, nil },
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client.Connect(ctx)
+	defer client.Close()
+
+	_, err := client.Request(ctx, &Message{
+		Type: "https://layr8.io/protocols/echo/1.0/request",
+		To:   []string{"did:web:bob"},
+		Body: map[string]string{"message": "hello"},
+	})
+	if err == nil {
+		t.Fatal("Request() should return error when server rejects")
+	}
+	if !strings.Contains(err.Error(), "unauthorized") {
+		t.Errorf("error = %q, should contain 'unauthorized'", err.Error())
 	}
 }
 

@@ -254,14 +254,21 @@ func (c *Client) sendProblemReport(original *Message, handlerErr error) {
 	c.sendMessage(report)
 }
 
-// Send sends a fire-and-forget message. Returns once the message is written to the connection.
-func (c *Client) Send(ctx context.Context, msg *Message) error {
+// Send sends a DIDComm message and waits for the server to acknowledge it.
+// By default it blocks until the server replies (poka-yoke: callers see rejections).
+// Use WithFireAndForget() to skip waiting for the server reply.
+func (c *Client) Send(ctx context.Context, msg *Message, opts ...SendOption) error {
 	c.mu.Lock()
 	if !c.connected {
 		c.mu.Unlock()
 		return ErrNotConnected
 	}
 	c.mu.Unlock()
+
+	o := sendDefaults()
+	for _, opt := range opts {
+		opt(&o)
+	}
 
 	if msg.ID == "" {
 		msg.ID = generateID()
@@ -270,7 +277,23 @@ func (c *Client) Send(ctx context.Context, msg *Message) error {
 		msg.From = c.agentDID
 	}
 
-	return c.sendMessage(msg)
+	data, err := marshalDIDComm(msg)
+	if err != nil {
+		return err
+	}
+
+	if o.fireAndForget {
+		return c.transport.sendFireAndForget("message", data)
+	}
+
+	reply, err := c.transport.send(ctx, "message", data)
+	if err != nil {
+		return err
+	}
+	if reply.Status == "error" {
+		return fmt.Errorf("server rejected message: %s", reply.Reason)
+	}
+	return nil
 }
 
 // Request sends a message and blocks until a correlated response arrives or the context expires.
@@ -305,12 +328,20 @@ func (c *Client) Request(ctx context.Context, msg *Message, opts ...RequestOptio
 	c.pending.Store(msg.ThreadID, respCh)
 	defer c.pending.Delete(msg.ThreadID)
 
-	// Send the message
-	if err := c.sendMessage(msg); err != nil {
+	// Send the message (with server reply checking)
+	data, err := marshalDIDComm(msg)
+	if err != nil {
 		return nil, err
 	}
+	reply, err := c.transport.send(ctx, "message", data)
+	if err != nil {
+		return nil, err
+	}
+	if reply.Status == "error" {
+		return nil, fmt.Errorf("server rejected message: %s", reply.Reason)
+	}
 
-	// Wait for response or timeout
+	// Wait for DIDComm response or timeout
 	select {
 	case resp := <-respCh:
 		// Check if response is a problem report
@@ -344,7 +375,7 @@ func (c *Client) sendMessage(msg *Message) error {
 	// The node wraps inbound messages in context+plaintext, but outbound
 	// messages are sent as bare DIDComm JSON.
 	// Uses fire-and-forget because this is called from handler goroutines
-	// where there's no caller context. Task 6 will add proper reply handling
-	// to Send() and Request().
+	// (runHandler, sendProblemReport) where there's no caller context.
+	// Send() and Request() use transport.send() for proper reply handling.
 	return c.transport.sendFireAndForget("message", data)
 }
