@@ -136,6 +136,12 @@ func parseDIDComm(data json.RawMessage) (*Message, error) {
 		return nil, fmt.Errorf("parse plaintext: %w", err)
 	}
 
+	// Decode body into a generic map so Body is accessible without UnmarshalBody
+	var bodyMap any
+	if len(plaintext.Body) > 0 {
+		_ = json.Unmarshal(plaintext.Body, &bodyMap)
+	}
+
 	msg := &Message{
 		ID:             plaintext.ID,
 		Type:           plaintext.Type,
@@ -143,6 +149,7 @@ func parseDIDComm(data json.RawMessage) (*Message, error) {
 		To:             plaintext.To,
 		ThreadID:       plaintext.ThID,
 		ParentThreadID: plaintext.PThID,
+		Body:           bodyMap,
 		bodyRaw:        plaintext.Body,
 	}
 
