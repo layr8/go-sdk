@@ -2,6 +2,7 @@ package layr8
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 )
@@ -17,6 +18,7 @@ type Client struct {
 	mu        sync.Mutex
 
 	agentDID string // resolved DID (explicit or assigned by node)
+	onError  ErrorHandler
 
 	// Correlation map for Request/Response pattern
 	pending sync.Map // threadID -> chan *Message
@@ -26,17 +28,24 @@ type Client struct {
 }
 
 // NewClient creates a new Layr8 client with the given configuration.
+// The onError handler is called for SDK-level errors that cannot be returned
+// to a direct caller (e.g., inbound parse failures, missing handlers).
 // The client is not connected until Connect() is called.
-func NewClient(cfg Config) (*Client, error) {
+func NewClient(cfg Config, onError ErrorHandler) (*Client, error) {
 	resolved, err := resolveConfig(cfg)
 	if err != nil {
 		return nil, err
+	}
+
+	if onError == nil {
+		return nil, errors.New("ErrorHandler must not be nil")
 	}
 
 	return &Client{
 		cfg:      resolved,
 		registry: newHandlerRegistry(),
 		agentDID: resolved.AgentDID,
+		onError:  onError,
 	}, nil
 }
 

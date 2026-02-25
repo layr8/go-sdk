@@ -13,6 +13,9 @@ import (
 	"time"
 )
 
+// discardErrors is a no-op ErrorHandler used in tests that don't assert error handler behavior.
+var discardErrors = func(SDKError) {}
+
 func setupMockServer(t *testing.T) (*mockPhoenixServer, *httptest.Server, string) {
 	t.Helper()
 	mock := newMockServer()
@@ -33,12 +36,22 @@ func setupMockServer(t *testing.T) (*mockPhoenixServer, *httptest.Server, string
 	return mock, server, wsURL
 }
 
+func TestNewClient_NilErrorHandler(t *testing.T) {
+	_, err := NewClient(Config{
+		NodeURL: "ws://localhost:4000",
+		APIKey:  "test-key",
+	}, nil)
+	if err == nil {
+		t.Fatal("NewClient() should error when ErrorHandler is nil")
+	}
+}
+
 func TestNewClient_ValidConfig(t *testing.T) {
 	client, err := NewClient(Config{
 		NodeURL:  "ws://localhost:4000/plugin_socket/websocket",
 		APIKey:   "test-key",
 		AgentDID: "did:web:test",
-	})
+	}, discardErrors)
 	if err != nil {
 		t.Fatalf("NewClient() error: %v", err)
 	}
@@ -48,14 +61,14 @@ func TestNewClient_ValidConfig(t *testing.T) {
 }
 
 func TestNewClient_MissingNodeURL(t *testing.T) {
-	_, err := NewClient(Config{APIKey: "test-key"})
+	_, err := NewClient(Config{APIKey: "test-key"}, discardErrors)
 	if err == nil {
 		t.Fatal("NewClient() should error when NodeURL is missing")
 	}
 }
 
 func TestNewClient_MissingAPIKey(t *testing.T) {
-	_, err := NewClient(Config{NodeURL: "ws://localhost:4000"})
+	_, err := NewClient(Config{NodeURL: "ws://localhost:4000"}, discardErrors)
 	if err == nil {
 		t.Fatal("NewClient() should error when APIKey is missing")
 	}
@@ -66,7 +79,7 @@ func TestClient_Handle_BeforeConnect(t *testing.T) {
 		NodeURL:  "ws://localhost:4000",
 		APIKey:   "test-key",
 		AgentDID: "did:web:test",
-	})
+	}, discardErrors)
 
 	err := client.Handle("https://layr8.io/protocols/echo/1.0/request",
 		func(msg *Message) (*Message, error) { return nil, nil },
@@ -83,7 +96,7 @@ func TestClient_Handle_AfterConnect(t *testing.T) {
 		NodeURL:  wsURL,
 		APIKey:   "test-key",
 		AgentDID: "did:web:test",
-	})
+	}, discardErrors)
 	client.Handle("https://layr8.io/protocols/echo/1.0/request",
 		func(msg *Message) (*Message, error) { return nil, nil },
 	)
@@ -109,7 +122,7 @@ func TestClient_ConnectAndClose(t *testing.T) {
 		NodeURL:  wsURL,
 		APIKey:   "test-key",
 		AgentDID: "did:web:test",
-	})
+	}, discardErrors)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -132,7 +145,7 @@ func TestClient_DoubleConnect(t *testing.T) {
 		NodeURL:  wsURL,
 		APIKey:   "test-key",
 		AgentDID: "did:web:test",
-	})
+	}, discardErrors)
 	client.Handle("https://layr8.io/protocols/echo/1.0/request",
 		func(msg *Message) (*Message, error) { return nil, nil },
 	)
@@ -156,7 +169,7 @@ func TestClient_OnDisconnect(t *testing.T) {
 		NodeURL:  wsURL,
 		APIKey:   "test-key",
 		AgentDID: "did:web:test",
-	})
+	}, discardErrors)
 
 	called := make(chan struct{})
 	client.OnDisconnect(func(err error) {
@@ -174,7 +187,7 @@ func TestClient_OnReconnect(t *testing.T) {
 		NodeURL:  wsURL,
 		APIKey:   "test-key",
 		AgentDID: "did:web:test",
-	})
+	}, discardErrors)
 
 	called := make(chan struct{})
 	client.OnReconnect(func() {
@@ -192,7 +205,7 @@ func TestClient_Send(t *testing.T) {
 		NodeURL:  wsURL,
 		APIKey:   "test-key",
 		AgentDID: "did:web:alice",
-	})
+	}, discardErrors)
 	// Need at least one handler so protocols are derived
 	client.Handle("https://layr8.io/protocols/echo/1.0/request",
 		func(msg *Message) (*Message, error) { return nil, nil },
@@ -234,7 +247,7 @@ func TestClient_Send_NotConnected(t *testing.T) {
 		NodeURL:  "ws://localhost:4000",
 		APIKey:   "test-key",
 		AgentDID: "did:web:test",
-	})
+	}, discardErrors)
 
 	err := client.Send(context.Background(), &Message{
 		Type: "test",
@@ -252,7 +265,7 @@ func TestClient_Send_AutoFillsFields(t *testing.T) {
 		NodeURL:  wsURL,
 		APIKey:   "test-key",
 		AgentDID: "did:web:alice",
-	})
+	}, discardErrors)
 	client.Handle("https://layr8.io/protocols/echo/1.0/request",
 		func(msg *Message) (*Message, error) { return nil, nil },
 	)
@@ -325,7 +338,7 @@ func TestClient_Request_ResponseCorrelation(t *testing.T) {
 		NodeURL:  wsURL,
 		APIKey:   "test-key",
 		AgentDID: "did:web:alice",
-	})
+	}, discardErrors)
 	client.Handle("https://layr8.io/protocols/echo/1.0/request",
 		func(msg *Message) (*Message, error) { return nil, nil },
 	)
@@ -364,7 +377,7 @@ func TestClient_Request_Timeout(t *testing.T) {
 		NodeURL:  wsURL,
 		APIKey:   "test-key",
 		AgentDID: "did:web:alice",
-	})
+	}, discardErrors)
 	client.Handle("https://layr8.io/protocols/echo/1.0/request",
 		func(msg *Message) (*Message, error) { return nil, nil },
 	)
@@ -432,7 +445,7 @@ func TestClient_Request_ProblemReport(t *testing.T) {
 		NodeURL:  wsURL,
 		APIKey:   "test-key",
 		AgentDID: "did:web:alice",
-	})
+	}, discardErrors)
 	client.Handle("https://layr8.io/protocols/echo/1.0/request",
 		func(msg *Message) (*Message, error) { return nil, nil },
 	)
@@ -504,7 +517,7 @@ func TestClient_Request_WithParentThread(t *testing.T) {
 		NodeURL:  wsURL,
 		APIKey:   "test-key",
 		AgentDID: "did:web:alice",
-	})
+	}, discardErrors)
 	client.Handle("https://layr8.io/protocols/echo/1.0/request",
 		func(msg *Message) (*Message, error) { return nil, nil },
 	)
@@ -535,7 +548,7 @@ func TestClient_InboundHandler_AutoAck(t *testing.T) {
 		NodeURL:  wsURL,
 		APIKey:   "test-key",
 		AgentDID: "did:web:alice",
-	})
+	}, discardErrors)
 	client.Handle("https://didcomm.org/basicmessage/2.0/message",
 		func(msg *Message) (*Message, error) {
 			handlerCalled <- msg
@@ -616,7 +629,7 @@ func TestClient_InboundHandler_ResponseAutoFill(t *testing.T) {
 		NodeURL:  wsURL,
 		APIKey:   "test-key",
 		AgentDID: "did:web:alice",
-	})
+	}, discardErrors)
 	client.Handle("https://layr8.io/protocols/echo/1.0/request",
 		func(msg *Message) (*Message, error) {
 			return &Message{
@@ -688,7 +701,7 @@ func TestClient_InboundHandler_ErrorSendsProblemReport(t *testing.T) {
 		NodeURL:  wsURL,
 		APIKey:   "test-key",
 		AgentDID: "did:web:alice",
-	})
+	}, discardErrors)
 	client.Handle("https://layr8.io/protocols/echo/1.0/request",
 		func(msg *Message) (*Message, error) {
 			return nil, fmt.Errorf("something went wrong")
@@ -779,7 +792,7 @@ func TestClient_ConcurrentRequests(t *testing.T) {
 		NodeURL:  wsURL,
 		APIKey:   "test-key",
 		AgentDID: "did:web:alice",
-	})
+	}, discardErrors)
 	client.Handle("https://layr8.io/protocols/echo/1.0/request",
 		func(msg *Message) (*Message, error) { return nil, nil },
 	)
