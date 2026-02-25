@@ -91,6 +91,10 @@ type ErrorHandler func(SDKError)
 // LogErrors returns an ErrorHandler that logs all SDK errors to the given logger.
 func LogErrors(logger *log.Logger) ErrorHandler {
 	return func(e SDKError) {
-		logger.Printf("[layr8] %s: %v (msg=%s type=%s from=%s)", e.Kind, e.Cause, e.MessageID, e.Type, e.From)
+		if e.Cause != nil {
+			logger.Printf("[layr8] %s: %v (msg=%s type=%s from=%s)", e.Kind, e.Cause, e.MessageID, e.Type, e.From)
+		} else {
+			logger.Printf("[layr8] %s (msg=%s type=%s from=%s)", e.Kind, e.MessageID, e.Type, e.From)
+		}
 	}
 }

@@ -130,6 +130,48 @@ func TestErrorKind_String(t *testing.T) {
 	}
 }
 
+func TestErrorKind_String_OutOfRange(t *testing.T) {
+	tests := []struct {
+		kind ErrorKind
+		want string
+	}{
+		{ErrorKind(-1), "ErrorKind(-1)"},
+		{ErrorKind(999), "ErrorKind(999)"},
+	}
+	for _, tt := range tests {
+		if got := tt.kind.String(); got != tt.want {
+			t.Errorf("ErrorKind(%d).String() = %q, want %q", tt.kind, got, tt.want)
+		}
+	}
+}
+
+func TestSDKError_Error_NilCause(t *testing.T) {
+	err := &SDKError{Kind: ErrParseFailure, MessageID: "msg-1"}
+	got := err.Error()
+	if strings.Contains(got, "<nil>") {
+		t.Errorf("Error() = %q, should not contain '<nil>' when Cause is nil", got)
+	}
+	if !strings.Contains(got, "ErrParseFailure") {
+		t.Errorf("Error() = %q, should contain error kind", got)
+	}
+}
+
+func TestLogErrors_NilCause(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+
+	handler := LogErrors(logger)
+	handler(SDKError{Kind: ErrNoHandler, MessageID: "msg-1"})
+
+	output := buf.String()
+	if strings.Contains(output, "<nil>") {
+		t.Errorf("LogErrors output = %q, should not contain '<nil>' when Cause is nil", output)
+	}
+	if !strings.Contains(output, "ErrNoHandler") {
+		t.Errorf("LogErrors output = %q, should contain error kind", output)
+	}
+}
+
 func TestLogErrors(t *testing.T) {
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0)
