@@ -29,7 +29,7 @@ func main() {
         NodeURL:  "ws://localhost:4000/plugin_socket/websocket",
         APIKey:   "your-api-key",
         AgentDID: "did:web:myorg:my-agent",
-    })
+    }, layr8.LogErrors(log.Default()))
     if err != nil {
         log.Fatal(err)
     }
@@ -64,7 +64,7 @@ func main() {
 The `Client` is the main entry point. It manages the WebSocket connection to a cloud-node, routes inbound messages to handlers, and provides methods for sending outbound messages.
 
 ```go
-client, err := layr8.NewClient(layr8.Config{...})
+client, err := layr8.NewClient(layr8.Config{...}, layr8.LogErrors(log.Default()))
 
 // Register handlers before connecting
 client.Handle(messageType, handlerFunc)
@@ -134,9 +134,9 @@ The SDK automatically derives protocol base URIs from your handler message types
 
 ## Sending Messages
 
-### Send (Fire-and-Forget)
+### Send
 
-Send a one-way message with no response expected:
+Send a one-way message. By default, `Send` waits for the server to acknowledge the message and returns an error if the server rejects it (e.g., authorization failure):
 
 ```go
 err := client.Send(ctx, &layr8.Message{
@@ -144,6 +144,12 @@ err := client.Send(ctx, &layr8.Message{
     To:   []string{"did:web:other-org:their-agent"},
     Body: ChatMessage{Content: "hello!"},
 })
+```
+
+For fire-and-forget behavior (no server ack), use `WithFireAndForget()`:
+
+```go
+err := client.Send(ctx, msg, layr8.WithFireAndForget())
 ```
 
 ### Request (Request/Response)
@@ -192,11 +198,11 @@ client, err := layr8.NewClient(layr8.Config{
     NodeURL:  "ws://localhost:4000/plugin_socket/websocket",
     APIKey:   "my-api-key",
     AgentDID: "did:web:myorg:my-agent",
-})
+}, layr8.LogErrors(log.Default()))
 
 // Environment-only configuration
 // Set LAYR8_NODE_URL, LAYR8_API_KEY, LAYR8_AGENT_DID
-client, err := layr8.NewClient(layr8.Config{})
+client, err := layr8.NewClient(layr8.Config{}, layr8.LogErrors(log.Default()))
 ```
 
 ## Handler Options
@@ -230,7 +236,7 @@ If no `AgentDID` is configured, the cloud-node assigns an ephemeral DID on conne
 client, _ := layr8.NewClient(layr8.Config{
     NodeURL: "ws://localhost:4000/plugin_socket/websocket",
     APIKey:  "my-key",
-})
+}, layr8.LogErrors(log.Default()))
 client.Connect(ctx)
 
 fmt.Println(client.DID()) // "did:web:myorg:abc123" (assigned by node)
@@ -275,6 +281,24 @@ client.Handle(messageType, func(msg *layr8.Message) (*layr8.Message, error) {
 | `SenderCredentials` | `[]Credential` | Verifiable credentials presented by the sender |
 
 ## Error Handling
+
+### ErrorHandler (Required)
+
+`NewClient` requires an `ErrorHandler` as its second argument. This callback is invoked for SDK-level errors that cannot be returned to a direct caller — unparseable messages, missing handlers, handler panics, server rejections, and transport write failures.
+
+```go
+client, err := layr8.NewClient(cfg, layr8.LogErrors(log.Default()))
+```
+
+`LogErrors` is a built-in helper that logs all errors via a standard `log.Logger`. For custom handling:
+
+```go
+client, err := layr8.NewClient(cfg, func(e layr8.SDKError) {
+    slog.Error("sdk error", "kind", e.Kind, "error", e.Cause)
+})
+```
+
+Error kinds: `ErrParseFailure`, `ErrNoHandler`, `ErrHandlerPanic`, `ErrServerReject`, `ErrTransportWrite`.
 
 ### Problem Reports
 

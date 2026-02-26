@@ -4,7 +4,7 @@
 //   - NewClient / Config (explicit + env var fallback)
 //   - Handle (register handlers, multi-protocol)
 //   - Connect / Close / DID()
-//   - Send (fire-and-forget)
+//   - Send (server-acked)
 //   - Request (cross-node request/response)
 //   - Problem reports (handler error → ProblemReportError)
 //   - Manual ack (WithManualAck + msg.Ack())
@@ -298,8 +298,8 @@ func main() {
 		}
 	}
 
-	// Test 7: Fire-and-forget (Send)
-	fmt.Println("  [7] Fire-and-forget (Send)")
+	// Test 7: Send (server-acked by default)
+	fmt.Println("  [7] Send (server-acked)")
 
 	err = bob.Send(ctx, &layr8.Message{
 		Type: "https://didcomm.org/basicmessage/2.0/message",
