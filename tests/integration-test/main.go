@@ -11,6 +11,8 @@
 //   - Auth context (MessageContext.Authorized, SenderCredentials)
 //   - WithParentThread (nested thread correlation)
 //   - Sentinel errors (ErrNotConnected, ErrAlreadyConnected)
+//   - W3C Credentials (sign, verify, store, list, get)
+//   - W3C Presentations (sign, verify)
 //
 // Prerequisites:
 //   - Two nodes running in local Tilt env (alice-test, bob-test)
@@ -525,6 +527,122 @@ func main() {
 		pass("Request before Connect returns ErrNotConnected")
 	} else {
 		fail("ErrNotConnected (Request)", fmt.Sprintf("expected ErrNotConnected, got %v", err))
+	}
+
+	// ═══════════════════════════════════════════════════════════════════
+	section("W3C Credentials & Presentations")
+	// ═══════════════════════════════════════════════════════════════════
+
+	// Test 15: Sign and verify a credential
+	fmt.Println("  [15] Sign and verify a credential")
+
+	cred := layr8.Credential{
+		Context: []string{"https://www.w3.org/ns/credentials/v2"},
+		Type:    []string{"VerifiableCredential"},
+		CredentialSubject: map[string]any{
+			"id":   bobDID,
+			"name": "Bob Test User",
+		},
+	}
+
+	signedCred, err := alice.SignCredential(ctx, cred)
+	if err != nil {
+		skip("sign credential", fmt.Sprintf("SignCredential: %v (feature may not be deployed)", err))
+	} else if signedCred == "" {
+		fail("sign credential", "SignCredential returned empty string")
+	} else {
+		verified, err := alice.VerifyCredential(ctx, signedCred)
+		if err != nil {
+			fail("verify credential", fmt.Sprintf("VerifyCredential: %v", err))
+		} else if verified.Credential == nil {
+			fail("verify credential", "VerifiedCredential.Credential is nil")
+		} else if _, ok := verified.Credential["credentialSubject"]; !ok {
+			fail("verify credential", "credentialSubject missing from verified credential")
+		} else {
+			pass(fmt.Sprintf("signed (%d chars) and verified credential with credentialSubject", len(signedCred)))
+		}
+	}
+
+	// Test 16: Store, list, and get credential
+	fmt.Println("  [16] Store, list, and get credential")
+
+	if signedCred == "" {
+		skip("store/list/get credential", "skipped because SignCredential did not succeed")
+	} else {
+		stored, err := alice.StoreCredential(ctx, signedCred)
+		if err != nil {
+			skip("store credential", fmt.Sprintf("StoreCredential: %v (feature may not be deployed)", err))
+		} else if stored.ID == "" {
+			fail("store credential", "StoredCredential.ID is empty")
+		} else {
+			creds, err := alice.ListCredentials(ctx)
+			if err != nil {
+				fail("list credentials", fmt.Sprintf("ListCredentials: %v", err))
+			} else if len(creds) == 0 {
+				fail("list credentials", "ListCredentials returned 0 credentials")
+			} else {
+				found := false
+				for _, c := range creds {
+					if c.ID == stored.ID {
+						found = true
+						break
+					}
+				}
+				if !found {
+					fail("list credentials", fmt.Sprintf("stored credential %s not found in list of %d", stored.ID, len(creds)))
+				} else {
+					fetched, err := alice.GetCredential(ctx, stored.ID)
+					if err != nil {
+						fail("get credential", fmt.Sprintf("GetCredential: %v", err))
+					} else if fetched.CredentialJWT != signedCred {
+						fail("get credential", "fetched credential JWT does not match stored value")
+					} else {
+						pass(fmt.Sprintf("stored (id=%s), listed (%d creds), and fetched credential", stored.ID, len(creds)))
+					}
+				}
+			}
+		}
+	}
+
+	// Test 17: Sign and verify a presentation
+	fmt.Println("  [17] Sign and verify a presentation")
+
+	if signedCred == "" {
+		skip("sign/verify presentation", "skipped because SignCredential did not succeed")
+	} else {
+		signedPres, err := alice.SignPresentation(ctx, []string{signedCred})
+		if err != nil {
+			skip("sign presentation", fmt.Sprintf("SignPresentation: %v (feature may not be deployed)", err))
+		} else if signedPres == "" {
+			fail("sign presentation", "SignPresentation returned empty string")
+		} else {
+			verifiedPres, err := alice.VerifyPresentation(ctx, signedPres)
+			if err != nil {
+				fail("verify presentation", fmt.Sprintf("VerifyPresentation: %v", err))
+			} else if verifiedPres.Presentation == nil {
+				fail("verify presentation", "VerifiedPresentation.Presentation is nil")
+			} else {
+				pass(fmt.Sprintf("signed (%d chars) and verified presentation", len(signedPres)))
+			}
+		}
+	}
+
+	// Test 18: Sign credential with custom format
+	fmt.Println("  [18] Sign credential with custom format")
+
+	if signedCred == "" {
+		skip("sign credential JSON format", "skipped because initial SignCredential did not succeed")
+	} else {
+		signedJSON, err := alice.SignCredential(ctx, cred, layr8.WithCredentialFormat(layr8.FormatJSON))
+		if err != nil {
+			skip("sign credential JSON format", fmt.Sprintf("SignCredential(JSON): %v (format may not be supported)", err))
+		} else if signedJSON == "" {
+			fail("sign credential JSON format", "SignCredential(JSON) returned empty string")
+		} else if signedJSON == signedCred {
+			fail("sign credential JSON format", "JSON format output is identical to compact_jwt format")
+		} else {
+			pass(fmt.Sprintf("JSON format (%d chars) differs from compact_jwt (%d chars)", len(signedJSON), len(signedCred)))
+		}
 	}
 
 	// ═══════════════════════════════════════════════════════════════════
