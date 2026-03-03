@@ -12,6 +12,7 @@ import (
 type Client struct {
 	cfg       Config
 	transport transport
+	rest      *restClient
 	registry  *handlerRegistry
 
 	connected bool
@@ -42,8 +43,11 @@ func NewClient(cfg Config, onError ErrorHandler) (*Client, error) {
 		return nil, errors.New("ErrorHandler must not be nil")
 	}
 
+	restURL := restURLFromWebSocket(resolved.NodeURL)
+
 	return &Client{
 		cfg:      resolved,
+		rest:     newRestClient(restURL, resolved.APIKey),
 		registry: newHandlerRegistry(),
 		agentDID: resolved.AgentDID,
 		onError:  onError,

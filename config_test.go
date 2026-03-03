@@ -120,3 +120,46 @@ func TestResolveConfig_EmptyAgentDID_IsAllowed(t *testing.T) {
 		t.Errorf("AgentDID should remain empty, got %q", resolved.AgentDID)
 	}
 }
+
+func TestRestURLFromWebSocket(t *testing.T) {
+	tests := []struct {
+		name  string
+		wsURL string
+		want  string
+	}{
+		{
+			name:  "ws with path",
+			wsURL: "ws://alice-test.localhost/plugin_socket/websocket",
+			want:  "http://alice-test.localhost",
+		},
+		{
+			name:  "wss with path",
+			wsURL: "wss://alice-test.localhost/plugin_socket/websocket",
+			want:  "https://alice-test.localhost",
+		},
+		{
+			name:  "ws with port and path",
+			wsURL: "ws://localhost:4000/plugin_socket/websocket",
+			want:  "http://localhost:4000",
+		},
+		{
+			name:  "wss with port and path",
+			wsURL: "wss://mynode.layr8.cloud:443/plugin_socket/websocket",
+			want:  "https://mynode.layr8.cloud:443",
+		},
+		{
+			name:  "ws no path",
+			wsURL: "ws://localhost:4000",
+			want:  "http://localhost:4000",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := restURLFromWebSocket(tt.wsURL)
+			if got != tt.want {
+				t.Errorf("restURLFromWebSocket(%q) = %q, want %q", tt.wsURL, got, tt.want)
+			}
+		})
+	}
+}

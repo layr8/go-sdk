@@ -2,6 +2,7 @@ package layr8
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 )
@@ -50,4 +51,32 @@ func resolveConfig(cfg Config) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// restURLFromWebSocket derives the REST API base URL from a WebSocket URL.
+// ws://alice-test.localhost/plugin_socket/websocket → http://alice-test.localhost
+// wss://alice-test.localhost/plugin_socket/websocket → https://alice-test.localhost
+func restURLFromWebSocket(wsURL string) string {
+	u, err := url.Parse(wsURL)
+	if err != nil {
+		// Fallback: simple scheme replacement, strip path
+		s := strings.Replace(wsURL, "wss://", "https://", 1)
+		s = strings.Replace(s, "ws://", "http://", 1)
+		if i := strings.Index(s, "/"); i > 8 { // after scheme://
+			s = s[:i]
+		}
+		return s
+	}
+
+	switch u.Scheme {
+	case "wss":
+		u.Scheme = "https"
+	default:
+		u.Scheme = "http"
+	}
+	u.Path = ""
+	u.RawPath = ""
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String()
 }
