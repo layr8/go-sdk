@@ -612,7 +612,7 @@ func main() {
 	if signedCred == "" {
 		skip("sign/verify presentation", "skipped because SignCredential did not succeed")
 	} else {
-		signedPres, err := alice.SignPresentation(ctx, []string{signedCred})
+		signedPres, err := alice.SignPresentation(ctx, []string{signedCred}, layr8.WithNonce("test-nonce"))
 		if err != nil {
 			skip("sign presentation", fmt.Sprintf("SignPresentation: %v (feature may not be deployed)", err))
 		} else if signedPres == "" {
