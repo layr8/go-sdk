@@ -538,7 +538,9 @@ func main() {
 
 	cred := layr8.Credential{
 		Context: []string{"https://www.w3.org/ns/credentials/v2"},
+		ID:      fmt.Sprintf("urn:uuid:test-cred-%s", testID),
 		Type:    []string{"VerifiableCredential"},
+		Issuer:  aliceDID,
 		CredentialSubject: map[string]any{
 			"id":   bobDID,
 			"name": "Bob Test User",
