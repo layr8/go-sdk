@@ -344,6 +344,84 @@ if err != nil {
 | `ErrAlreadyConnected` | `Connect()` called on an already-connected client |
 | `ErrClientClosed` | `Connect()` called on a closed client |
 
+## W3C Verifiable Credentials
+
+The SDK provides methods for signing, verifying, storing, listing, and retrieving [W3C Verifiable Credentials](https://www.w3.org/TR/vc-data-model-2.0/). These operations use the cloud-node's REST API and the DID keys in the node's wallet.
+
+### Sign a Credential
+
+```go
+cred := layr8.Credential{
+    Context:           []string{"https://www.w3.org/ns/credentials/v2"},
+    ID:                "urn:uuid:my-credential",
+    Type:              []string{"VerifiableCredential"},
+    Issuer:            client.DID(),
+    CredentialSubject: map[string]any{"id": "did:web:example:holder", "name": "Alice"},
+}
+
+signedJWT, err := client.SignCredential(ctx, cred)
+```
+
+Options: `WithIssuerDID(did)`, `WithCredentialFormat(format)`.
+
+### Verify a Credential
+
+```go
+verified, err := client.VerifyCredential(ctx, signedJWT)
+fmt.Println(verified.Credential) // decoded credential claims
+fmt.Println(verified.Headers)    // JWT headers (alg, kid, etc.)
+```
+
+Options: `WithVerifierDID(did)`.
+
+> **Note:** The verifier DID must have keys in the local node's wallet. Cross-node verification is not currently supported.
+
+### Store, List, Get
+
+```go
+// Store a signed credential
+stored, err := client.StoreCredential(ctx, signedJWT)
+fmt.Println(stored.ID) // storage ID
+
+// List all stored credentials
+creds, err := client.ListCredentials(ctx)
+
+// Retrieve by ID
+fetched, err := client.GetCredential(ctx, stored.ID)
+fmt.Println(fetched.CredentialJWT) // the original signed JWT
+```
+
+Store options: `WithHolderDID(did)`, `WithStoreMeta(issuerDID, validUntil)`.
+List options: `WithListHolderDID(did)`.
+
+### Output Formats
+
+`WithCredentialFormat()` accepts: `FormatCompactJWT` (default), `FormatJSON`, `FormatJWT`, `FormatEnveloped`.
+
+## W3C Verifiable Presentations
+
+Presentations wrap one or more signed credentials into a holder-signed envelope.
+
+### Sign a Presentation
+
+```go
+signedPres, err := client.SignPresentation(ctx, []string{signedJWT},
+    layr8.WithNonce("challenge-from-verifier"),
+)
+```
+
+Options: `WithPresentationHolderDID(did)`, `WithPresentationFormat(format)`, `WithNonce(nonce)`.
+
+### Verify a Presentation
+
+```go
+verified, err := client.VerifyPresentation(ctx, signedPres)
+fmt.Println(verified.Presentation) // decoded presentation claims
+fmt.Println(verified.Headers)      // JWT headers
+```
+
+Options: `WithPresentationVerifierDID(did)`.
+
 ## Examples
 
 The [examples/](examples/) directory contains complete, runnable agents:
