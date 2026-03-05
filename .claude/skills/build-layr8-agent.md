@@ -194,7 +194,13 @@ if errors.As(err, &connErr) {
 }
 ```
 
-## Connection Callbacks
+## Connection Resilience
+
+The SDK automatically reconnects when the WebSocket connection drops (node restart, network interruption). Reconnection uses exponential backoff (1s → 2s → 4s → ... → 30s max).
+
+During reconnection:
+- `Send()`, `Request()`, and other operations return `ErrNotConnected` immediately — no message queuing
+- `Close()` stops the reconnect loop
 
 ```go
 client.OnDisconnect(func(err error) {
@@ -205,7 +211,7 @@ client.OnReconnect(func() {
 })
 ```
 
-Note: `OnDisconnect` fires only on unexpected drops, not on `Close()`.
+`OnDisconnect` fires only on unexpected drops, not on `Close()`.
 
 ## DID and Protocol Conventions
 

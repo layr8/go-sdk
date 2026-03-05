@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/url"
 	"strings"
@@ -90,10 +91,12 @@ type phoenixChannel struct {
 	topic    string
 
 	conn *websocket.Conn
-	mu   sync.Mutex // protects conn writes and refCounter
+	mu   sync.Mutex // protects conn writes, refCounter, and reconnecting
 
-	refCounter int
-	joinRef    string
+	refCounter   int
+	joinRef      string
+	protocols    []string // stored from connect() for reconnect
+	reconnecting bool     // true while reconnect loop is running
 
 	pendingJoin chan json.RawMessage
 	pendingRefs sync.Map // ref → chan serverReply
@@ -118,6 +121,13 @@ func newPhoenixChannel(wsURL, apiKey, agentDID string) *phoenixChannel {
 }
 
 func (c *phoenixChannel) connect(ctx context.Context, protocols []string) error {
+	c.protocols = protocols
+	return c.dial(ctx)
+}
+
+// dial establishes the WebSocket connection, joins the channel, and starts
+// the read loop and heartbeat. Used by both initial connect() and reconnect.
+func (c *phoenixChannel) dial(ctx context.Context) error {
 	// Build URL with API key
 	u, err := url.Parse(c.wsURL)
 	if err != nil {
@@ -148,13 +158,14 @@ func (c *phoenixChannel) connect(ctx context.Context, protocols []string) error 
 
 	c.mu.Lock()
 	c.conn = conn
+	c.refCounter = 0
 	c.mu.Unlock()
 
 	// Start reader goroutine
 	go c.readLoop()
 
 	// Send phx_join
-	if err := c.join(ctx, protocols); err != nil {
+	if err := c.join(ctx, c.protocols); err != nil {
 		conn.Close()
 		return err
 	}
@@ -293,11 +304,12 @@ func (c *phoenixChannel) close() error {
 	case <-c.done:
 		return nil // already closed
 	default:
-		close(c.done)
+		close(c.done) // signals reconnectLoop and heartbeatLoop to stop
 	}
 
 	c.mu.Lock()
 	conn := c.conn
+	c.reconnecting = false
 	c.mu.Unlock()
 
 	if conn != nil {
@@ -336,9 +348,12 @@ func (c *phoenixChannel) readLoop() {
 			case <-c.done:
 				return
 			default:
+				// Connection dropped — reject pending refs and start reconnect.
+				c.rejectPendingRefs()
 				if c.disconnectFn != nil {
 					c.disconnectFn(err)
 				}
+				go c.reconnectLoop(err)
 				return
 			}
 		}
@@ -350,6 +365,79 @@ func (c *phoenixChannel) readLoop() {
 
 		c.handleInbound(msg)
 	}
+}
+
+// reconnectLoop attempts to re-establish the connection with exponential backoff.
+// It runs until the connection is restored or close() is called.
+func (c *phoenixChannel) reconnectLoop(initialErr error) {
+	c.mu.Lock()
+	if c.reconnecting {
+		c.mu.Unlock()
+		return // another goroutine is already reconnecting
+	}
+	c.reconnecting = true
+	if c.conn != nil {
+		c.conn.Close()
+		c.conn = nil
+	}
+	c.mu.Unlock()
+
+	bo := newBackoff(1*time.Second, 30*time.Second)
+
+	for {
+		delay := bo.next()
+		slog.Info("reconnecting", "delay", delay, "url", c.wsURL)
+
+		select {
+		case <-c.done:
+			return
+		case <-time.After(delay):
+		}
+
+		// Check if closed while waiting
+		select {
+		case <-c.done:
+			return
+		default:
+		}
+
+		// Temporarily clear reconnecting so dial()'s writeMsg calls succeed
+		c.mu.Lock()
+		c.reconnecting = false
+		c.mu.Unlock()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err := c.dial(ctx)
+		cancel()
+
+		if err != nil {
+			c.mu.Lock()
+			c.reconnecting = true
+			c.mu.Unlock()
+			slog.Warn("reconnect failed", "error", err, "url", c.wsURL)
+			continue
+		}
+
+		// Success — reconnecting is already false
+		slog.Info("reconnected", "url", c.wsURL)
+		if c.reconnectFn != nil {
+			c.reconnectFn()
+		}
+		return
+	}
+}
+
+// rejectPendingRefs cancels all in-flight send() calls waiting for server replies.
+func (c *phoenixChannel) rejectPendingRefs() {
+	c.pendingRefs.Range(func(key, value interface{}) bool {
+		ch := value.(chan serverReply)
+		select {
+		case ch <- serverReply{Status: "error", Reason: "disconnected"}:
+		default:
+		}
+		c.pendingRefs.Delete(key)
+		return true
+	})
 }
 
 func (c *phoenixChannel) handleInbound(msg phoenixMessage) {
@@ -387,9 +475,12 @@ func (c *phoenixChannel) handleInbound(msg phoenixMessage) {
 			c.msgHandler(msg.Payload)
 		}
 	case "phx_error", "phx_close":
+		err := fmt.Errorf("channel %s", msg.Event)
+		c.rejectPendingRefs()
 		if c.disconnectFn != nil {
-			c.disconnectFn(fmt.Errorf("channel %s", msg.Event))
+			c.disconnectFn(err)
 		}
+		go c.reconnectLoop(err)
 	}
 }
 
@@ -425,7 +516,7 @@ func (c *phoenixChannel) nextRef() string {
 func (c *phoenixChannel) writeMsg(msg phoenixMessage) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.conn == nil {
+	if c.conn == nil || c.reconnecting {
 		return ErrNotConnected
 	}
 	data, err := marshalPhoenixMsg(msg)

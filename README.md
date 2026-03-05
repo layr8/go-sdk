@@ -242,9 +242,15 @@ client.Connect(ctx)
 fmt.Println(client.DID()) // "did:web:myorg:abc123" (assigned by node)
 ```
 
-### Disconnect and Reconnect Callbacks
+### Connection Resilience
 
-Monitor connection state with callbacks:
+The SDK automatically reconnects when the WebSocket connection drops (e.g., node restart, network interruption). Reconnection uses exponential backoff starting at 1 second, capped at 30 seconds.
+
+During reconnection:
+- `Send()`, `Request()`, and other operations return `ErrNotConnected` immediately — the SDK does not queue messages
+- The `OnDisconnect` callback fires when the connection drops
+- The `OnReconnect` callback fires when the connection is restored
+- `Close()` stops the reconnect loop
 
 ```go
 client.OnDisconnect(func(err error) {
