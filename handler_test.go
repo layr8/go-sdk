@@ -1,7 +1,6 @@
 package layr8
 
 import (
-	"encoding/json"
 	"testing"
 )
 
@@ -64,9 +63,10 @@ func TestHandlerRegistry_DeriveProtocols(t *testing.T) {
 
 	protocols := r.protocols()
 
-	// Should deduplicate: echo/1.0 appears once, postgres/1.0 once
-	if len(protocols) != 2 {
-		t.Fatalf("protocols() len = %d, want 2, got %v", len(protocols), protocols)
+	// Should deduplicate: echo/1.0 appears once, postgres/1.0 once,
+	// plus the always-included report-problem/2.0
+	if len(protocols) != 3 {
+		t.Fatalf("protocols() len = %d, want 3, got %v", len(protocols), protocols)
 	}
 
 	has := func(p string) bool {
@@ -99,24 +99,19 @@ func TestHandlerRegistry_DeriveProtocols_DIDComm(t *testing.T) {
 	}
 }
 
-func TestHandlerRegistry_ProtocolsEmpty_NotNil(t *testing.T) {
+func TestHandlerRegistry_ProtocolsAlwaysIncludesProblemReport(t *testing.T) {
 	r := newHandlerRegistry()
 	protocols := r.protocols()
 
 	if protocols == nil {
-		t.Fatal("protocols() should return non-nil empty slice, got nil")
+		t.Fatal("protocols() should return non-nil slice, got nil")
 	}
-	if len(protocols) != 0 {
-		t.Fatalf("protocols() should return empty slice, got %v", protocols)
+	// Even with no handlers, report-problem is always included
+	if len(protocols) != 1 {
+		t.Fatalf("protocols() len = %d, want 1, got %v", len(protocols), protocols)
 	}
-
-	// Verify JSON serialization produces [] not null
-	data, err := json.Marshal(protocols)
-	if err != nil {
-		t.Fatalf("json.Marshal error: %v", err)
-	}
-	if string(data) != "[]" {
-		t.Fatalf("json.Marshal(protocols) = %s, want []", string(data))
+	if protocols[0] != "https://didcomm.org/report-problem/2.0" {
+		t.Fatalf("protocols()[0] = %s, want report-problem/2.0", protocols[0])
 	}
 }
 

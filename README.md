@@ -29,7 +29,7 @@ func main() {
         NodeURL:  "ws://localhost:4000/plugin_socket/websocket",
         APIKey:   "your-api-key",
         AgentDID: "did:web:myorg:my-agent",
-    })
+    }, layr8.LogErrors(log.Default()))
     if err != nil {
         log.Fatal(err)
     }
@@ -64,7 +64,7 @@ func main() {
 The `Client` is the main entry point. It manages the WebSocket connection to a cloud-node, routes inbound messages to handlers, and provides methods for sending outbound messages.
 
 ```go
-client, err := layr8.NewClient(layr8.Config{...})
+client, err := layr8.NewClient(layr8.Config{...}, layr8.LogErrors(log.Default()))
 
 // Register handlers before connecting
 client.Handle(messageType, handlerFunc)
@@ -134,9 +134,9 @@ The SDK automatically derives protocol base URIs from your handler message types
 
 ## Sending Messages
 
-### Send (Fire-and-Forget)
+### Send
 
-Send a one-way message with no response expected:
+Send a one-way message. By default, `Send` waits for the server to acknowledge the message and returns an error if the server rejects it (e.g., authorization failure):
 
 ```go
 err := client.Send(ctx, &layr8.Message{
@@ -144,6 +144,12 @@ err := client.Send(ctx, &layr8.Message{
     To:   []string{"did:web:other-org:their-agent"},
     Body: ChatMessage{Content: "hello!"},
 })
+```
+
+For fire-and-forget behavior (no server ack), use `WithFireAndForget()`:
+
+```go
+err := client.Send(ctx, msg, layr8.WithFireAndForget())
 ```
 
 ### Request (Request/Response)
@@ -192,11 +198,11 @@ client, err := layr8.NewClient(layr8.Config{
     NodeURL:  "ws://localhost:4000/plugin_socket/websocket",
     APIKey:   "my-api-key",
     AgentDID: "did:web:myorg:my-agent",
-})
+}, layr8.LogErrors(log.Default()))
 
 // Environment-only configuration
 // Set LAYR8_NODE_URL, LAYR8_API_KEY, LAYR8_AGENT_DID
-client, err := layr8.NewClient(layr8.Config{})
+client, err := layr8.NewClient(layr8.Config{}, layr8.LogErrors(log.Default()))
 ```
 
 ## Handler Options
@@ -230,15 +236,21 @@ If no `AgentDID` is configured, the cloud-node assigns an ephemeral DID on conne
 client, _ := layr8.NewClient(layr8.Config{
     NodeURL: "ws://localhost:4000/plugin_socket/websocket",
     APIKey:  "my-key",
-})
+}, layr8.LogErrors(log.Default()))
 client.Connect(ctx)
 
 fmt.Println(client.DID()) // "did:web:myorg:abc123" (assigned by node)
 ```
 
-### Disconnect and Reconnect Callbacks
+### Connection Resilience
 
-Monitor connection state with callbacks:
+The SDK automatically reconnects when the WebSocket connection drops (e.g., node restart, network interruption). Reconnection uses exponential backoff starting at 1 second, capped at 30 seconds.
+
+During reconnection:
+- `Send()`, `Request()`, and other operations return `ErrNotConnected` immediately — the SDK does not queue messages
+- The `OnDisconnect` callback fires when the connection drops
+- The `OnReconnect` callback fires when the connection is restored
+- `Close()` stops the reconnect loop
 
 ```go
 client.OnDisconnect(func(err error) {
@@ -275,6 +287,24 @@ client.Handle(messageType, func(msg *layr8.Message) (*layr8.Message, error) {
 | `SenderCredentials` | `[]Credential` | Verifiable credentials presented by the sender |
 
 ## Error Handling
+
+### ErrorHandler (Required)
+
+`NewClient` requires an `ErrorHandler` as its second argument. This callback is invoked for SDK-level errors that cannot be returned to a direct caller — unparseable messages, missing handlers, handler panics, server rejections, and transport write failures.
+
+```go
+client, err := layr8.NewClient(cfg, layr8.LogErrors(log.Default()))
+```
+
+`LogErrors` is a built-in helper that logs all errors via a standard `log.Logger`. For custom handling:
+
+```go
+client, err := layr8.NewClient(cfg, func(e layr8.SDKError) {
+    slog.Error("sdk error", "kind", e.Kind, "error", e.Cause)
+})
+```
+
+Error kinds: `ErrParseFailure`, `ErrNoHandler`, `ErrHandlerPanic`, `ErrServerReject`, `ErrTransportWrite`.
 
 ### Problem Reports
 
@@ -319,6 +349,84 @@ if err != nil {
 | `ErrNotConnected` | Operation attempted before `Connect()` or after `Close()` |
 | `ErrAlreadyConnected` | `Connect()` called on an already-connected client |
 | `ErrClientClosed` | `Connect()` called on a closed client |
+
+## W3C Verifiable Credentials
+
+The SDK provides methods for signing, verifying, storing, listing, and retrieving [W3C Verifiable Credentials](https://www.w3.org/TR/vc-data-model-2.0/). These operations use the cloud-node's REST API and the DID keys in the node's wallet.
+
+### Sign a Credential
+
+```go
+cred := layr8.Credential{
+    Context:           []string{"https://www.w3.org/ns/credentials/v2"},
+    ID:                "urn:uuid:my-credential",
+    Type:              []string{"VerifiableCredential"},
+    Issuer:            client.DID(),
+    CredentialSubject: map[string]any{"id": "did:web:example:holder", "name": "Alice"},
+}
+
+signedJWT, err := client.SignCredential(ctx, cred)
+```
+
+Options: `WithIssuerDID(did)`, `WithCredentialFormat(format)`.
+
+### Verify a Credential
+
+```go
+verified, err := client.VerifyCredential(ctx, signedJWT)
+fmt.Println(verified.Credential) // decoded credential claims
+fmt.Println(verified.Headers)    // JWT headers (alg, kid, etc.)
+```
+
+Options: `WithVerifierDID(did)`.
+
+> **Note:** The verifier DID must have keys in the local node's wallet. Cross-node verification is not currently supported.
+
+### Store, List, Get
+
+```go
+// Store a signed credential
+stored, err := client.StoreCredential(ctx, signedJWT)
+fmt.Println(stored.ID) // storage ID
+
+// List all stored credentials
+creds, err := client.ListCredentials(ctx)
+
+// Retrieve by ID
+fetched, err := client.GetCredential(ctx, stored.ID)
+fmt.Println(fetched.CredentialJWT) // the original signed JWT
+```
+
+Store options: `WithHolderDID(did)`, `WithStoreMeta(issuerDID, validUntil)`.
+List options: `WithListHolderDID(did)`.
+
+### Output Formats
+
+`WithCredentialFormat()` accepts: `FormatCompactJWT` (default), `FormatJSON`, `FormatJWT`, `FormatEnveloped`.
+
+## W3C Verifiable Presentations
+
+Presentations wrap one or more signed credentials into a holder-signed envelope.
+
+### Sign a Presentation
+
+```go
+signedPres, err := client.SignPresentation(ctx, []string{signedJWT},
+    layr8.WithNonce("challenge-from-verifier"),
+)
+```
+
+Options: `WithPresentationHolderDID(did)`, `WithPresentationFormat(format)`, `WithNonce(nonce)`.
+
+### Verify a Presentation
+
+```go
+verified, err := client.VerifyPresentation(ctx, signedPres)
+fmt.Println(verified.Presentation) // decoded presentation claims
+fmt.Println(verified.Headers)      // JWT headers
+```
+
+Options: `WithPresentationVerifierDID(did)`.
 
 ## Examples
 

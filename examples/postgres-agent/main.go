@@ -59,7 +59,7 @@ func main() {
 		NodeURL:  "ws://localhost:4000/plugin_socket/websocket",
 		AgentDID: "did:web:mycompany:postgres-agent",
 		// APIKey loaded from LAYR8_API_KEY env
-	})
+	}, layr8.LogErrors(log.Default()))
 	if err != nil {
 		log.Fatal(err)
 	}

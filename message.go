@@ -28,11 +28,11 @@ type Message struct {
 type MessageContext struct {
 	Recipient         string       `json:"recipient"`
 	Authorized        bool         `json:"authorized"`
-	SenderCredentials []Credential `json:"sender_credentials"`
+	SenderCredentials []SenderCredential `json:"sender_credentials"`
 }
 
-// Credential represents a sender credential from the cloud-node.
-type Credential struct {
+// SenderCredential represents a sender credential from the cloud-node's message context.
+type SenderCredential struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 }
@@ -147,9 +147,9 @@ func parseDIDComm(data json.RawMessage) (*Message, error) {
 	}
 
 	if env.Context != nil {
-		creds := make([]Credential, len(env.Context.SenderCredentials))
+		creds := make([]SenderCredential, len(env.Context.SenderCredentials))
 		for i, c := range env.Context.SenderCredentials {
-			creds[i] = Credential{
+			creds[i] = SenderCredential{
 				ID:   c.CredentialSubject.ID,
 				Name: c.CredentialSubject.Name,
 			}
