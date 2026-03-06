@@ -499,6 +499,88 @@ func TestClient_Request_ProblemReport(t *testing.T) {
 	}
 }
 
+func TestClient_Request_ProblemReportViaPthid(t *testing.T) {
+	mock, _, wsURL := setupMockServer(t)
+
+	mock.onMsg = func(msg phoenixMessage) {
+		if msg.Event == "phx_join" {
+			mock.sendToClient(phoenixMessage{
+				JoinRef: msg.Ref,
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"ok","response":{}}`),
+			})
+			return
+		}
+		if msg.Event == "message" {
+			mock.sendToClient(phoenixMessage{
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"ok","response":{}}`),
+			})
+
+			var outbound struct {
+				ThID string `json:"thid"`
+			}
+			json.Unmarshal(msg.Payload, &outbound)
+
+			// Problem report with its own thid and pthid pointing to
+			// the original request thread (DIDComm spec pattern).
+			resp, _ := json.Marshal(map[string]interface{}{
+				"plaintext": map[string]interface{}{
+					"id":    "prob-1",
+					"type":  "https://didcomm.org/report-problem/2.0/problem-report",
+					"from":  "did:web:bob",
+					"thid":  "prob-1",
+					"pthid": outbound.ThID,
+					"body": map[string]string{
+						"code":    "e.protocol.trust.auth.not-authorized",
+						"comment": "Not authorized to perform send",
+					},
+				},
+			})
+			mock.sendToClient(phoenixMessage{
+				Topic:   "plugins:did:web:alice",
+				Event:   "message",
+				Payload: resp,
+			})
+		}
+	}
+
+	client, _ := NewClient(Config{
+		NodeURL:  wsURL,
+		APIKey:   "test-key",
+		AgentDID: "did:web:alice",
+	}, discardErrors)
+	client.Handle("https://layr8.io/protocols/echo/1.0/request",
+		func(msg *Message) (*Message, error) { return nil, nil },
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client.Connect(ctx)
+	defer client.Close()
+
+	_, err := client.Request(ctx, &Message{
+		Type: "https://layr8.io/protocols/echo/1.0/request",
+		To:   []string{"did:web:bob"},
+		Body: map[string]string{"message": "hello"},
+	})
+	if err == nil {
+		t.Fatal("Request() should return error for problem report via pthid")
+	}
+
+	var probErr *ProblemReportError
+	if !errors.As(err, &probErr) {
+		t.Fatalf("error should be ProblemReportError, got %T: %v", err, err)
+	}
+	if probErr.Code != "e.protocol.trust.auth.not-authorized" {
+		t.Errorf("Code = %q, want %q", probErr.Code, "e.protocol.trust.auth.not-authorized")
+	}
+}
+
 func TestClient_Request_WithParentThread(t *testing.T) {
 	mock, _, wsURL := setupMockServer(t)
 

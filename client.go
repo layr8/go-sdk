@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -160,7 +161,9 @@ func (c *Client) handleInboundMessage(payload []byte) {
 		return
 	}
 
-	// Check if this is a response to a pending Request (by thread ID)
+	// Check if this is a response to a pending Request.
+	// Match on thid first (normal responses), then fall back to pthid
+	// (problem reports reference the parent thread per DIDComm spec).
 	if msg.ThreadID != "" {
 		if ch, ok := c.pending.LoadAndDelete(msg.ThreadID); ok {
 			respCh := ch.(chan *Message)
@@ -170,6 +173,34 @@ func (c *Client) handleInboundMessage(payload []byte) {
 			}
 			return
 		}
+	}
+	if msg.ParentThreadID != "" && msg.ParentThreadID != msg.ThreadID {
+		if ch, ok := c.pending.LoadAndDelete(msg.ParentThreadID); ok {
+			respCh := ch.(chan *Message)
+			select {
+			case respCh <- msg:
+			default:
+			}
+			return
+		}
+	}
+
+	// Problem reports that don't match a pending Request are orphaned
+	// (the original request already timed out). Ack and report, don't ErrNoHandler.
+	if isProblemReport(msg.Type) {
+		c.transport.sendAck([]string{msg.ID})
+		var prob ProblemReportError
+		if err := msg.UnmarshalBody(&prob); err == nil {
+			c.onError(SDKError{
+				Kind:      ErrServerReject,
+				MessageID: msg.ID,
+				Type:      msg.Type,
+				From:      msg.From,
+				Cause:     &prob,
+				Timestamp: time.Now(),
+			})
+		}
+		return
 	}
 
 	// Route to registered handler
@@ -360,6 +391,11 @@ func (c *Client) Request(ctx context.Context, msg *Message, opts ...RequestOptio
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+// isProblemReport checks if a message type is a DIDComm problem report.
+func isProblemReport(msgType string) bool {
+	return strings.HasPrefix(msgType, "https://didcomm.org/report-problem/")
 }
 
 func (c *Client) sendMessage(msg *Message) error {

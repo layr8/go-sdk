@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 )
 
@@ -17,12 +18,19 @@ var (
 // ProblemReportError represents a DIDComm problem report received from a remote agent.
 // See: https://identity.foundation/didcomm-messaging/spec/#problem-reports
 type ProblemReportError struct {
-	Code    string `json:"code"`
-	Comment string `json:"comment"`
+	Code    string   `json:"code"`
+	Comment string   `json:"comment"`
+	Args    []string `json:"args,omitempty"`
 }
 
 func (e *ProblemReportError) Error() string {
-	return fmt.Sprintf("problem report [%s]: %s", e.Code, e.Comment)
+	comment := e.Comment
+	// Substitute {1}, {2}, ... placeholders with args per DIDComm spec.
+	for i, arg := range e.Args {
+		placeholder := fmt.Sprintf("{%d}", i+1)
+		comment = strings.ReplaceAll(comment, placeholder, arg)
+	}
+	return fmt.Sprintf("problem report [%s]: %s", e.Code, comment)
 }
 
 // ConnectionError represents a failure to connect or maintain connection to the cloud-node.
