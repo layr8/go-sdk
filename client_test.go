@@ -13,6 +13,9 @@ import (
 	"time"
 )
 
+// discardErrors is a no-op ErrorHandler used in tests that don't assert error handler behavior.
+var discardErrors = func(SDKError) {}
+
 func setupMockServer(t *testing.T) (*mockPhoenixServer, *httptest.Server, string) {
 	t.Helper()
 	mock := newMockServer()
@@ -25,6 +28,16 @@ func setupMockServer(t *testing.T) (*mockPhoenixServer, *httptest.Server, string
 				Event:   "phx_reply",
 				Payload: json.RawMessage(`{"status":"ok","response":{"did":"did:web:node:test"}}`),
 			})
+			return
+		}
+		// Reply OK to all other events (message, ack, etc.)
+		if msg.Ref != "" {
+			mock.sendToClient(phoenixMessage{
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"ok","response":{}}`),
+			})
 		}
 	}
 	server := httptest.NewServer(http.HandlerFunc(mock.handler))
@@ -33,12 +46,22 @@ func setupMockServer(t *testing.T) (*mockPhoenixServer, *httptest.Server, string
 	return mock, server, wsURL
 }
 
+func TestNewClient_NilErrorHandler(t *testing.T) {
+	_, err := NewClient(Config{
+		NodeURL: "ws://localhost:4000",
+		APIKey:  "test-key",
+	}, nil)
+	if err == nil {
+		t.Fatal("NewClient() should error when ErrorHandler is nil")
+	}
+}
+
 func TestNewClient_ValidConfig(t *testing.T) {
 	client, err := NewClient(Config{
 		NodeURL:  "ws://localhost:4000/plugin_socket/websocket",
 		APIKey:   "test-key",
 		AgentDID: "did:web:test",
-	})
+	}, discardErrors)
 	if err != nil {
 		t.Fatalf("NewClient() error: %v", err)
 	}
@@ -48,14 +71,14 @@ func TestNewClient_ValidConfig(t *testing.T) {
 }
 
 func TestNewClient_MissingNodeURL(t *testing.T) {
-	_, err := NewClient(Config{APIKey: "test-key"})
+	_, err := NewClient(Config{APIKey: "test-key"}, discardErrors)
 	if err == nil {
 		t.Fatal("NewClient() should error when NodeURL is missing")
 	}
 }
 
 func TestNewClient_MissingAPIKey(t *testing.T) {
-	_, err := NewClient(Config{NodeURL: "ws://localhost:4000"})
+	_, err := NewClient(Config{NodeURL: "ws://localhost:4000"}, discardErrors)
 	if err == nil {
 		t.Fatal("NewClient() should error when APIKey is missing")
 	}
@@ -66,7 +89,7 @@ func TestClient_Handle_BeforeConnect(t *testing.T) {
 		NodeURL:  "ws://localhost:4000",
 		APIKey:   "test-key",
 		AgentDID: "did:web:test",
-	})
+	}, discardErrors)
 
 	err := client.Handle("https://layr8.io/protocols/echo/1.0/request",
 		func(msg *Message) (*Message, error) { return nil, nil },
@@ -83,7 +106,7 @@ func TestClient_Handle_AfterConnect(t *testing.T) {
 		NodeURL:  wsURL,
 		APIKey:   "test-key",
 		AgentDID: "did:web:test",
-	})
+	}, discardErrors)
 	client.Handle("https://layr8.io/protocols/echo/1.0/request",
 		func(msg *Message) (*Message, error) { return nil, nil },
 	)
@@ -109,7 +132,7 @@ func TestClient_ConnectAndClose(t *testing.T) {
 		NodeURL:  wsURL,
 		APIKey:   "test-key",
 		AgentDID: "did:web:test",
-	})
+	}, discardErrors)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -132,7 +155,7 @@ func TestClient_DoubleConnect(t *testing.T) {
 		NodeURL:  wsURL,
 		APIKey:   "test-key",
 		AgentDID: "did:web:test",
-	})
+	}, discardErrors)
 	client.Handle("https://layr8.io/protocols/echo/1.0/request",
 		func(msg *Message) (*Message, error) { return nil, nil },
 	)
@@ -156,7 +179,7 @@ func TestClient_OnDisconnect(t *testing.T) {
 		NodeURL:  wsURL,
 		APIKey:   "test-key",
 		AgentDID: "did:web:test",
-	})
+	}, discardErrors)
 
 	called := make(chan struct{})
 	client.OnDisconnect(func(err error) {
@@ -174,7 +197,7 @@ func TestClient_OnReconnect(t *testing.T) {
 		NodeURL:  wsURL,
 		APIKey:   "test-key",
 		AgentDID: "did:web:test",
-	})
+	}, discardErrors)
 
 	called := make(chan struct{})
 	client.OnReconnect(func() {
@@ -192,7 +215,7 @@ func TestClient_Send(t *testing.T) {
 		NodeURL:  wsURL,
 		APIKey:   "test-key",
 		AgentDID: "did:web:alice",
-	})
+	}, discardErrors)
 	// Need at least one handler so protocols are derived
 	client.Handle("https://layr8.io/protocols/echo/1.0/request",
 		func(msg *Message) (*Message, error) { return nil, nil },
@@ -234,7 +257,7 @@ func TestClient_Send_NotConnected(t *testing.T) {
 		NodeURL:  "ws://localhost:4000",
 		APIKey:   "test-key",
 		AgentDID: "did:web:test",
-	})
+	}, discardErrors)
 
 	err := client.Send(context.Background(), &Message{
 		Type: "test",
@@ -252,7 +275,7 @@ func TestClient_Send_AutoFillsFields(t *testing.T) {
 		NodeURL:  wsURL,
 		APIKey:   "test-key",
 		AgentDID: "did:web:alice",
-	})
+	}, discardErrors)
 	client.Handle("https://layr8.io/protocols/echo/1.0/request",
 		func(msg *Message) (*Message, error) { return nil, nil },
 	)
@@ -295,6 +318,14 @@ func TestClient_Request_ResponseCorrelation(t *testing.T) {
 		}
 
 		if msg.Event == "message" {
+			// Server acknowledges the message
+			mock.sendToClient(phoenixMessage{
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"ok","response":{}}`),
+			})
+
 			// Parse outbound DIDComm message (bare, no plaintext wrapper)
 			var outbound struct {
 				ThID string `json:"thid"`
@@ -325,7 +356,7 @@ func TestClient_Request_ResponseCorrelation(t *testing.T) {
 		NodeURL:  wsURL,
 		APIKey:   "test-key",
 		AgentDID: "did:web:alice",
-	})
+	}, discardErrors)
 	client.Handle("https://layr8.io/protocols/echo/1.0/request",
 		func(msg *Message) (*Message, error) { return nil, nil },
 	)
@@ -364,7 +395,7 @@ func TestClient_Request_Timeout(t *testing.T) {
 		NodeURL:  wsURL,
 		APIKey:   "test-key",
 		AgentDID: "did:web:alice",
-	})
+	}, discardErrors)
 	client.Handle("https://layr8.io/protocols/echo/1.0/request",
 		func(msg *Message) (*Message, error) { return nil, nil },
 	)
@@ -403,6 +434,14 @@ func TestClient_Request_ProblemReport(t *testing.T) {
 			return
 		}
 		if msg.Event == "message" {
+			// Server acknowledges the message
+			mock.sendToClient(phoenixMessage{
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"ok","response":{}}`),
+			})
+
 			var outbound struct {
 				ThID string `json:"thid"`
 			}
@@ -432,7 +471,7 @@ func TestClient_Request_ProblemReport(t *testing.T) {
 		NodeURL:  wsURL,
 		APIKey:   "test-key",
 		AgentDID: "did:web:alice",
-	})
+	}, discardErrors)
 	client.Handle("https://layr8.io/protocols/echo/1.0/request",
 		func(msg *Message) (*Message, error) { return nil, nil },
 	)
@@ -460,6 +499,88 @@ func TestClient_Request_ProblemReport(t *testing.T) {
 	}
 }
 
+func TestClient_Request_ProblemReportViaPthid(t *testing.T) {
+	mock, _, wsURL := setupMockServer(t)
+
+	mock.onMsg = func(msg phoenixMessage) {
+		if msg.Event == "phx_join" {
+			mock.sendToClient(phoenixMessage{
+				JoinRef: msg.Ref,
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"ok","response":{}}`),
+			})
+			return
+		}
+		if msg.Event == "message" {
+			mock.sendToClient(phoenixMessage{
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"ok","response":{}}`),
+			})
+
+			var outbound struct {
+				ThID string `json:"thid"`
+			}
+			json.Unmarshal(msg.Payload, &outbound)
+
+			// Problem report with its own thid and pthid pointing to
+			// the original request thread (DIDComm spec pattern).
+			resp, _ := json.Marshal(map[string]interface{}{
+				"plaintext": map[string]interface{}{
+					"id":    "prob-1",
+					"type":  "https://didcomm.org/report-problem/2.0/problem-report",
+					"from":  "did:web:bob",
+					"thid":  "prob-1",
+					"pthid": outbound.ThID,
+					"body": map[string]string{
+						"code":    "e.protocol.trust.auth.not-authorized",
+						"comment": "Not authorized to perform send",
+					},
+				},
+			})
+			mock.sendToClient(phoenixMessage{
+				Topic:   "plugins:did:web:alice",
+				Event:   "message",
+				Payload: resp,
+			})
+		}
+	}
+
+	client, _ := NewClient(Config{
+		NodeURL:  wsURL,
+		APIKey:   "test-key",
+		AgentDID: "did:web:alice",
+	}, discardErrors)
+	client.Handle("https://layr8.io/protocols/echo/1.0/request",
+		func(msg *Message) (*Message, error) { return nil, nil },
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client.Connect(ctx)
+	defer client.Close()
+
+	_, err := client.Request(ctx, &Message{
+		Type: "https://layr8.io/protocols/echo/1.0/request",
+		To:   []string{"did:web:bob"},
+		Body: map[string]string{"message": "hello"},
+	})
+	if err == nil {
+		t.Fatal("Request() should return error for problem report via pthid")
+	}
+
+	var probErr *ProblemReportError
+	if !errors.As(err, &probErr) {
+		t.Fatalf("error should be ProblemReportError, got %T: %v", err, err)
+	}
+	if probErr.Code != "e.protocol.trust.auth.not-authorized" {
+		t.Errorf("Code = %q, want %q", probErr.Code, "e.protocol.trust.auth.not-authorized")
+	}
+}
+
 func TestClient_Request_WithParentThread(t *testing.T) {
 	mock, _, wsURL := setupMockServer(t)
 
@@ -476,6 +597,14 @@ func TestClient_Request_WithParentThread(t *testing.T) {
 			return
 		}
 		if msg.Event == "message" {
+			// Server acknowledges the message
+			mock.sendToClient(phoenixMessage{
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"ok","response":{}}`),
+			})
+
 			var outbound struct {
 				ThID  string `json:"thid"`
 				PThID string `json:"pthid"`
@@ -504,7 +633,7 @@ func TestClient_Request_WithParentThread(t *testing.T) {
 		NodeURL:  wsURL,
 		APIKey:   "test-key",
 		AgentDID: "did:web:alice",
-	})
+	}, discardErrors)
 	client.Handle("https://layr8.io/protocols/echo/1.0/request",
 		func(msg *Message) (*Message, error) { return nil, nil },
 	)
@@ -535,7 +664,7 @@ func TestClient_InboundHandler_AutoAck(t *testing.T) {
 		NodeURL:  wsURL,
 		APIKey:   "test-key",
 		AgentDID: "did:web:alice",
-	})
+	}, discardErrors)
 	client.Handle("https://didcomm.org/basicmessage/2.0/message",
 		func(msg *Message) (*Message, error) {
 			handlerCalled <- msg
@@ -616,7 +745,7 @@ func TestClient_InboundHandler_ResponseAutoFill(t *testing.T) {
 		NodeURL:  wsURL,
 		APIKey:   "test-key",
 		AgentDID: "did:web:alice",
-	})
+	}, discardErrors)
 	client.Handle("https://layr8.io/protocols/echo/1.0/request",
 		func(msg *Message) (*Message, error) {
 			return &Message{
@@ -688,7 +817,7 @@ func TestClient_InboundHandler_ErrorSendsProblemReport(t *testing.T) {
 		NodeURL:  wsURL,
 		APIKey:   "test-key",
 		AgentDID: "did:web:alice",
-	})
+	}, discardErrors)
 	client.Handle("https://layr8.io/protocols/echo/1.0/request",
 		func(msg *Message) (*Message, error) {
 			return nil, fmt.Errorf("something went wrong")
@@ -735,6 +864,104 @@ func TestClient_InboundHandler_ErrorSendsProblemReport(t *testing.T) {
 	}
 }
 
+func TestClient_OnError_ParseFailure(t *testing.T) {
+	mock, _, wsURL := setupMockServer(t)
+
+	errCh := make(chan SDKError, 1)
+	client, _ := NewClient(Config{
+		NodeURL:  wsURL,
+		APIKey:   "test-key",
+		AgentDID: "did:web:alice",
+	}, func(e SDKError) { errCh <- e })
+
+	client.Handle("https://layr8.io/protocols/echo/1.0/request",
+		func(msg *Message) (*Message, error) { return nil, nil },
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client.Connect(ctx)
+	defer client.Close()
+
+	// Send a valid JSON payload that is not a valid DIDComm envelope
+	// (missing "plaintext" field causes parseDIDComm to fail)
+	mock.sendToClient(phoenixMessage{
+		Topic:   "plugins:did:web:alice",
+		Event:   "message",
+		Payload: json.RawMessage(`{"garbage": true}`),
+	})
+
+	select {
+	case e := <-errCh:
+		if e.Kind != ErrParseFailure {
+			t.Errorf("Kind = %v, want ErrParseFailure", e.Kind)
+		}
+		if e.Cause == nil {
+			t.Error("Cause should not be nil")
+		}
+		if e.Raw == nil {
+			t.Error("Raw should contain the unparseable payload")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for onError callback")
+	}
+}
+
+func TestClient_OnError_NoHandler(t *testing.T) {
+	mock, _, wsURL := setupMockServer(t)
+
+	errCh := make(chan SDKError, 1)
+	client, _ := NewClient(Config{
+		NodeURL:  wsURL,
+		APIKey:   "test-key",
+		AgentDID: "did:web:alice",
+	}, func(e SDKError) { errCh <- e })
+
+	// Register handler for echo, but NOT for basicmessage
+	client.Handle("https://layr8.io/protocols/echo/1.0/request",
+		func(msg *Message) (*Message, error) { return nil, nil },
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client.Connect(ctx)
+	defer client.Close()
+
+	// Send a message type with no handler
+	inbound, _ := json.Marshal(map[string]interface{}{
+		"plaintext": map[string]interface{}{
+			"id":   "msg-1",
+			"type": "https://didcomm.org/basicmessage/2.0/message",
+			"from": "did:web:bob",
+			"to":   []string{"did:web:alice"},
+			"body": map[string]string{"content": "hello"},
+		},
+	})
+	mock.sendToClient(phoenixMessage{
+		Topic:   "plugins:did:web:alice",
+		Event:   "message",
+		Payload: inbound,
+	})
+
+	select {
+	case e := <-errCh:
+		if e.Kind != ErrNoHandler {
+			t.Errorf("Kind = %v, want ErrNoHandler", e.Kind)
+		}
+		if e.MessageID != "msg-1" {
+			t.Errorf("MessageID = %q, want %q", e.MessageID, "msg-1")
+		}
+		if e.Type != "https://didcomm.org/basicmessage/2.0/message" {
+			t.Errorf("Type = %q, want basicmessage type", e.Type)
+		}
+		if e.From != "did:web:bob" {
+			t.Errorf("From = %q, want %q", e.From, "did:web:bob")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for onError callback")
+	}
+}
+
 func TestClient_ConcurrentRequests(t *testing.T) {
 	mock, _, wsURL := setupMockServer(t)
 
@@ -751,6 +978,14 @@ func TestClient_ConcurrentRequests(t *testing.T) {
 			return
 		}
 		if msg.Event == "message" {
+			// Server acknowledges the message
+			mock.sendToClient(phoenixMessage{
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"ok","response":{}}`),
+			})
+
 			var outbound struct {
 				ThID string `json:"thid"`
 				Body struct {
@@ -779,7 +1014,7 @@ func TestClient_ConcurrentRequests(t *testing.T) {
 		NodeURL:  wsURL,
 		APIKey:   "test-key",
 		AgentDID: "did:web:alice",
-	})
+	}, discardErrors)
 	client.Handle("https://layr8.io/protocols/echo/1.0/request",
 		func(msg *Message) (*Message, error) { return nil, nil },
 	)
@@ -825,5 +1060,181 @@ func TestClient_ConcurrentRequests(t *testing.T) {
 		if !ok || int(idx) != i {
 			t.Errorf("Request[%d] got index %v, want %d", i, body["index"], i)
 		}
+	}
+}
+
+func TestClient_Send_ServerReject(t *testing.T) {
+	mock, _, wsURL := setupMockServer(t)
+
+	// Override mock to reject messages
+	mock.onMsg = func(msg phoenixMessage) {
+		if msg.Event == "phx_join" {
+			mock.sendToClient(phoenixMessage{
+				JoinRef: msg.Ref,
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"ok","response":{}}`),
+			})
+			return
+		}
+		if msg.Event == "message" {
+			mock.sendToClient(phoenixMessage{
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"error","response":{"reason":"unauthorized"}}`),
+			})
+		}
+	}
+
+	client, _ := NewClient(Config{
+		NodeURL:  wsURL,
+		APIKey:   "test-key",
+		AgentDID: "did:web:alice",
+	}, discardErrors)
+	client.Handle("https://layr8.io/protocols/echo/1.0/request",
+		func(msg *Message) (*Message, error) { return nil, nil },
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client.Connect(ctx)
+	defer client.Close()
+
+	err := client.Send(ctx, &Message{
+		Type: "https://didcomm.org/basicmessage/2.0/message",
+		To:   []string{"did:web:bob"},
+		Body: map[string]string{"content": "hello"},
+	})
+	if err == nil {
+		t.Fatal("Send() should return error when server rejects")
+	}
+	if !strings.Contains(err.Error(), "unauthorized") {
+		t.Errorf("error = %q, should contain 'unauthorized'", err.Error())
+	}
+}
+
+func TestClient_Request_ServerReject(t *testing.T) {
+	mock, _, wsURL := setupMockServer(t)
+
+	mock.onMsg = func(msg phoenixMessage) {
+		if msg.Event == "phx_join" {
+			mock.sendToClient(phoenixMessage{
+				JoinRef: msg.Ref,
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"ok","response":{}}`),
+			})
+			return
+		}
+		if msg.Event == "message" {
+			mock.sendToClient(phoenixMessage{
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"error","response":{"reason":"unauthorized"}}`),
+			})
+		}
+	}
+
+	client, _ := NewClient(Config{
+		NodeURL:  wsURL,
+		APIKey:   "test-key",
+		AgentDID: "did:web:alice",
+	}, discardErrors)
+	client.Handle("https://layr8.io/protocols/echo/1.0/request",
+		func(msg *Message) (*Message, error) { return nil, nil },
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client.Connect(ctx)
+	defer client.Close()
+
+	_, err := client.Request(ctx, &Message{
+		Type: "https://layr8.io/protocols/echo/1.0/request",
+		To:   []string{"did:web:bob"},
+		Body: map[string]string{"message": "hello"},
+	})
+	if err == nil {
+		t.Fatal("Request() should return error when server rejects")
+	}
+	if !strings.Contains(err.Error(), "unauthorized") {
+		t.Errorf("error = %q, should contain 'unauthorized'", err.Error())
+	}
+}
+
+func TestClient_OnError_HandlerPanic(t *testing.T) {
+	mock, _, wsURL := setupMockServer(t)
+
+	errCh := make(chan SDKError, 1)
+	client, _ := NewClient(Config{
+		NodeURL:  wsURL,
+		APIKey:   "test-key",
+		AgentDID: "did:web:alice",
+	}, func(e SDKError) { errCh <- e })
+
+	// Register handler that panics
+	client.Handle("https://layr8.io/protocols/echo/1.0/request",
+		func(msg *Message) (*Message, error) {
+			panic("test panic in handler")
+		},
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client.Connect(ctx)
+	defer client.Close()
+
+	// Send message that triggers the panicking handler
+	inbound, _ := json.Marshal(map[string]interface{}{
+		"plaintext": map[string]interface{}{
+			"id":   "req-panic",
+			"type": "https://layr8.io/protocols/echo/1.0/request",
+			"from": "did:web:bob",
+			"to":   []string{"did:web:alice"},
+			"body": map[string]string{"message": "trigger panic"},
+		},
+	})
+	mock.sendToClient(phoenixMessage{
+		Topic:   "plugins:did:web:alice",
+		Event:   "message",
+		Payload: inbound,
+	})
+
+	select {
+	case e := <-errCh:
+		if e.Kind != ErrHandlerPanic {
+			t.Errorf("Kind = %v, want ErrHandlerPanic", e.Kind)
+		}
+		if e.MessageID != "req-panic" {
+			t.Errorf("MessageID = %q, want %q", e.MessageID, "req-panic")
+		}
+		if e.Cause == nil {
+			t.Error("Cause should not be nil")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for onError callback")
+	}
+
+	// Verify a problem report was also sent back
+	time.Sleep(500 * time.Millisecond)
+	received := mock.getReceived()
+	var problemReportFound bool
+	for _, msg := range received {
+		if msg.Event == "message" {
+			var outbound struct {
+				Type string `json:"type"`
+			}
+			json.Unmarshal(msg.Payload, &outbound)
+			if outbound.Type == "https://didcomm.org/report-problem/2.0/problem-report" {
+				problemReportFound = true
+			}
+		}
+	}
+	if !problemReportFound {
+		t.Error("handler panic should result in a problem report being sent")
 	}
 }

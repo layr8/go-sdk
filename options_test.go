@@ -31,3 +31,18 @@ func TestRequestDefaults(t *testing.T) {
 		t.Error("default parentThreadID should be empty")
 	}
 }
+
+func TestWithFireAndForget(t *testing.T) {
+	opts := sendDefaults()
+	WithFireAndForget()(&opts)
+	if !opts.fireAndForget {
+		t.Error("WithFireAndForget should set fireAndForget to true")
+	}
+}
+
+func TestSendDefaults(t *testing.T) {
+	opts := sendDefaults()
+	if opts.fireAndForget {
+		t.Error("default fireAndForget should be false")
+	}
+}

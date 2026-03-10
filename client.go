@@ -2,14 +2,18 @@ package layr8
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
+	"time"
 )
 
 // Client is the main entry point for interacting with the Layr8 platform.
 type Client struct {
 	cfg       Config
 	transport transport
+	rest      *restClient
 	registry  *handlerRegistry
 
 	connected bool
@@ -17,6 +21,7 @@ type Client struct {
 	mu        sync.Mutex
 
 	agentDID string // resolved DID (explicit or assigned by node)
+	onError  ErrorHandler
 
 	// Correlation map for Request/Response pattern
 	pending sync.Map // threadID -> chan *Message
@@ -26,17 +31,27 @@ type Client struct {
 }
 
 // NewClient creates a new Layr8 client with the given configuration.
+// The onError handler is called for SDK-level errors that cannot be returned
+// to a direct caller (e.g., inbound parse failures, missing handlers).
 // The client is not connected until Connect() is called.
-func NewClient(cfg Config) (*Client, error) {
+func NewClient(cfg Config, onError ErrorHandler) (*Client, error) {
 	resolved, err := resolveConfig(cfg)
 	if err != nil {
 		return nil, err
 	}
 
+	if onError == nil {
+		return nil, errors.New("ErrorHandler must not be nil")
+	}
+
+	restURL := restURLFromWebSocket(resolved.NodeURL)
+
 	return &Client{
 		cfg:      resolved,
+		rest:     newRestClient(restURL, resolved.APIKey),
 		registry: newHandlerRegistry(),
 		agentDID: resolved.AgentDID,
+		onError:  onError,
 	}, nil
 }
 
@@ -137,10 +152,18 @@ func (c *Client) OnReconnect(fn func()) {
 func (c *Client) handleInboundMessage(payload []byte) {
 	msg, err := parseDIDComm(payload)
 	if err != nil {
-		return // silently drop unparseable messages
+		c.onError(SDKError{
+			Kind:      ErrParseFailure,
+			Raw:       payload,
+			Cause:     err,
+			Timestamp: time.Now(),
+		})
+		return
 	}
 
-	// Check if this is a response to a pending Request (by thread ID)
+	// Check if this is a response to a pending Request.
+	// Match on thid first (normal responses), then fall back to pthid
+	// (problem reports reference the parent thread per DIDComm spec).
 	if msg.ThreadID != "" {
 		if ch, ok := c.pending.LoadAndDelete(msg.ThreadID); ok {
 			respCh := ch.(chan *Message)
@@ -151,11 +174,46 @@ func (c *Client) handleInboundMessage(payload []byte) {
 			return
 		}
 	}
+	if msg.ParentThreadID != "" && msg.ParentThreadID != msg.ThreadID {
+		if ch, ok := c.pending.LoadAndDelete(msg.ParentThreadID); ok {
+			respCh := ch.(chan *Message)
+			select {
+			case respCh <- msg:
+			default:
+			}
+			return
+		}
+	}
+
+	// Problem reports that don't match a pending Request are orphaned
+	// (the original request already timed out). Ack and report, don't ErrNoHandler.
+	if isProblemReport(msg.Type) {
+		c.transport.sendAck([]string{msg.ID})
+		var prob ProblemReportError
+		if err := msg.UnmarshalBody(&prob); err == nil {
+			c.onError(SDKError{
+				Kind:      ErrServerReject,
+				MessageID: msg.ID,
+				Type:      msg.Type,
+				From:      msg.From,
+				Cause:     &prob,
+				Timestamp: time.Now(),
+			})
+		}
+		return
+	}
 
 	// Route to registered handler
 	entry, ok := c.registry.lookup(msg.Type)
 	if !ok {
-		return // no handler registered for this type
+		c.onError(SDKError{
+			Kind:      ErrNoHandler,
+			MessageID: msg.ID,
+			Type:      msg.Type,
+			From:      msg.From,
+			Timestamp: time.Now(),
+		})
+		return
 	}
 
 	// Auto-ack before handler (unless manual ack)
@@ -173,6 +231,21 @@ func (c *Client) handleInboundMessage(payload []byte) {
 }
 
 func (c *Client) runHandler(entry handlerEntry, msg *Message) {
+	defer func() {
+		if r := recover(); r != nil {
+			err := fmt.Errorf("handler panic: %v", r)
+			c.sendProblemReport(msg, err)
+			c.onError(SDKError{
+				Kind:      ErrHandlerPanic,
+				MessageID: msg.ID,
+				Type:      msg.Type,
+				From:      msg.From,
+				Cause:     err,
+				Timestamp: time.Now(),
+			})
+		}
+	}()
+
 	resp, err := entry.fn(msg)
 
 	if err != nil {
@@ -216,14 +289,21 @@ func (c *Client) sendProblemReport(original *Message, handlerErr error) {
 	c.sendMessage(report)
 }
 
-// Send sends a fire-and-forget message. Returns once the message is written to the connection.
-func (c *Client) Send(ctx context.Context, msg *Message) error {
+// Send sends a DIDComm message and waits for the server to acknowledge it.
+// By default it blocks until the server replies (poka-yoke: callers see rejections).
+// Use WithFireAndForget() to skip waiting for the server reply.
+func (c *Client) Send(ctx context.Context, msg *Message, opts ...SendOption) error {
 	c.mu.Lock()
 	if !c.connected {
 		c.mu.Unlock()
 		return ErrNotConnected
 	}
 	c.mu.Unlock()
+
+	o := sendDefaults()
+	for _, opt := range opts {
+		opt(&o)
+	}
 
 	if msg.ID == "" {
 		msg.ID = generateID()
@@ -232,7 +312,23 @@ func (c *Client) Send(ctx context.Context, msg *Message) error {
 		msg.From = c.agentDID
 	}
 
-	return c.sendMessage(msg)
+	data, err := marshalDIDComm(msg)
+	if err != nil {
+		return err
+	}
+
+	if o.fireAndForget {
+		return c.transport.sendFireAndForget("message", data)
+	}
+
+	reply, err := c.transport.send(ctx, "message", data)
+	if err != nil {
+		return err
+	}
+	if reply.Status == "error" {
+		return fmt.Errorf("server rejected message: %s", reply.Reason)
+	}
+	return nil
 }
 
 // Request sends a message and blocks until a correlated response arrives or the context expires.
@@ -267,12 +363,20 @@ func (c *Client) Request(ctx context.Context, msg *Message, opts ...RequestOptio
 	c.pending.Store(msg.ThreadID, respCh)
 	defer c.pending.Delete(msg.ThreadID)
 
-	// Send the message
-	if err := c.sendMessage(msg); err != nil {
+	// Send the message (with server reply checking)
+	data, err := marshalDIDComm(msg)
+	if err != nil {
 		return nil, err
 	}
+	reply, err := c.transport.send(ctx, "message", data)
+	if err != nil {
+		return nil, err
+	}
+	if reply.Status == "error" {
+		return nil, fmt.Errorf("server rejected message: %s", reply.Reason)
+	}
 
-	// Wait for response or timeout
+	// Wait for DIDComm response or timeout
 	select {
 	case resp := <-respCh:
 		// Check if response is a problem report
@@ -287,6 +391,11 @@ func (c *Client) Request(ctx context.Context, msg *Message, opts ...RequestOptio
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+// isProblemReport checks if a message type is a DIDComm problem report.
+func isProblemReport(msgType string) bool {
+	return strings.HasPrefix(msgType, "https://didcomm.org/report-problem/")
 }
 
 func (c *Client) sendMessage(msg *Message) error {
@@ -305,5 +414,8 @@ func (c *Client) sendMessage(msg *Message) error {
 	// Send DIDComm message directly as the payload (no envelope wrapper).
 	// The node wraps inbound messages in context+plaintext, but outbound
 	// messages are sent as bare DIDComm JSON.
-	return c.transport.send("message", data)
+	// Uses fire-and-forget because this is called from handler goroutines
+	// (runHandler, sendProblemReport) where there's no caller context.
+	// Send() and Request() use transport.send() for proper reply handling.
+	return c.transport.sendFireAndForget("message", data)
 }

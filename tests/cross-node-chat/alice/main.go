@@ -34,7 +34,7 @@ func main() {
 		NodeURL:  "ws://alice-test.localhost/plugin_socket/websocket",
 		APIKey:   "alice_abcd1234_testkeyalicetestkeyali24",
 		AgentDID: agentDID,
-	})
+	}, layr8.LogErrors(log.Default()))
 	if err != nil {
 		log.Fatalf("failed to create client: %v", err)
 	}

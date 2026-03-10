@@ -41,7 +41,7 @@ func main() {
 	defer f.Close()
 	var mu sync.Mutex
 
-	client, err := layr8.NewClient(layr8.Config{})
+	client, err := layr8.NewClient(layr8.Config{}, layr8.LogErrors(log.Default()))
 	if err != nil {
 		log.Fatal(err)
 	}

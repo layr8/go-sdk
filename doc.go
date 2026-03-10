@@ -12,7 +12,7 @@
 //	client, err := layr8.NewClient(layr8.Config{
 //	    NodeURL:  "ws://localhost:4000/plugin_socket/websocket",
 //	    AgentDID: "did:web:mycompany:my-agent",
-//	})
+//	}, layr8.LogErrors(log.Default()))
 //	if err != nil {
 //	    log.Fatal(err)
 //	}

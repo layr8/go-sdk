@@ -20,8 +20,10 @@ client, err := layr8.NewClient(layr8.Config{
     NodeURL:  "ws://mynode.localhost/plugin_socket/websocket",
     APIKey:   "my_api_key",
     AgentDID: "did:web:mynode.localhost:my-agent",
-})
+}, layr8.LogErrors(log.Default()))
 ```
+
+`NewClient` requires an `ErrorHandler` as its second argument. `LogErrors` is a built-in helper that logs SDK-level errors (parse failures, missing handlers, handler panics, server rejections). For custom handling, pass any `func(layr8.SDKError)`.
 
 All fields fall back to environment variables if empty:
 - `NodeURL`  → `LAYR8_NODE_URL`
@@ -69,7 +71,9 @@ The protocol base URI is derived automatically from the message type
 
 ## Sending Messages
 
-### Fire-and-forget
+### Send
+
+By default, `Send` waits for the server to acknowledge the message and returns an error on rejection:
 
 ```go
 err := client.Send(ctx, &layr8.Message{
@@ -77,6 +81,12 @@ err := client.Send(ctx, &layr8.Message{
     To:   []string{"did:web:other-node:agent"},
     Body: map[string]string{"content": "Hello!"},
 })
+```
+
+For fire-and-forget (no server ack):
+
+```go
+err := client.Send(ctx, msg, layr8.WithFireAndForget())
 ```
 
 ### Request/Response
@@ -139,6 +149,22 @@ resp, err := client.Request(ctx, msg, layr8.WithParentThread("parent-thread-id")
 
 ## Error Handling
 
+### ErrorHandler (Required)
+
+`NewClient` requires an `ErrorHandler` as its second argument — SDK-level errors are never silently swallowed:
+
+```go
+// Built-in logger
+client, err := layr8.NewClient(cfg, layr8.LogErrors(log.Default()))
+
+// Custom handler
+client, err := layr8.NewClient(cfg, func(e layr8.SDKError) {
+    slog.Error("sdk error", "kind", e.Kind, "error", e.Cause)
+})
+```
+
+Error kinds: `ErrParseFailure`, `ErrNoHandler`, `ErrHandlerPanic`, `ErrServerReject`, `ErrTransportWrite`.
+
 ### Problem Reports
 
 When a remote handler returns an error, `Request` returns `*ProblemReportError`:
@@ -168,7 +194,13 @@ if errors.As(err, &connErr) {
 }
 ```
 
-## Connection Callbacks
+## Connection Resilience
+
+The SDK automatically reconnects when the WebSocket connection drops (node restart, network interruption). Reconnection uses exponential backoff (1s → 2s → 4s → ... → 30s max).
+
+During reconnection:
+- `Send()`, `Request()`, and other operations return `ErrNotConnected` immediately — no message queuing
+- `Close()` stops the reconnect loop
 
 ```go
 client.OnDisconnect(func(err error) {
@@ -179,7 +211,7 @@ client.OnReconnect(func() {
 })
 ```
 
-Note: `OnDisconnect` fires only on unexpected drops, not on `Close()`.
+`OnDisconnect` fires only on unexpected drops, not on `Close()`.
 
 ## DID and Protocol Conventions
 
@@ -230,7 +262,7 @@ type EchoResponse struct {
 }
 
 func main() {
-    client, err := layr8.NewClient(layr8.Config{})
+    client, err := layr8.NewClient(layr8.Config{}, layr8.LogErrors(log.Default()))
     if err != nil {
         log.Fatal(err)
     }
@@ -284,7 +316,7 @@ type EchoResponse struct {
 }
 
 func main() {
-    client, err := layr8.NewClient(layr8.Config{})
+    client, err := layr8.NewClient(layr8.Config{}, layr8.LogErrors(log.Default()))
     if err != nil {
         log.Fatal(err)
     }
