@@ -19,20 +19,25 @@ type restClient struct {
 	httpClient *http.Client
 }
 
-func newRestClient(baseURL, apiKey string) *restClient {
+func newRestClient(baseURL, apiKey string, dialContext func(ctx context.Context, network, addr string) (net.Conn, error)) *restClient {
+	dial := dialContext
+	if dial == nil {
+		// Default: resolve *.localhost to 127.0.0.1 (RFC 6761).
+		dial = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err == nil && isLocalhost(host) {
+				addr = net.JoinHostPort("127.0.0.1", port)
+			}
+			return (&net.Dialer{}).DialContext(ctx, network, addr)
+		}
+	}
 	return &restClient{
 		baseURL: baseURL,
 		apiKey:  apiKey,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 			Transport: &http.Transport{
-				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-					host, port, err := net.SplitHostPort(addr)
-					if err == nil && isLocalhost(host) {
-						addr = net.JoinHostPort("127.0.0.1", port)
-					}
-					return (&net.Dialer{}).DialContext(ctx, network, addr)
-				},
+				DialContext: dial,
 			},
 		},
 	}
