@@ -48,7 +48,7 @@ func NewClient(cfg Config, onError ErrorHandler) (*Client, error) {
 
 	return &Client{
 		cfg:      resolved,
-		rest:     newRestClient(restURL, resolved.APIKey),
+		rest:     newRestClient(restURL, resolved.APIKey, resolved.DialContext),
 		registry: newHandlerRegistry(),
 		agentDID: resolved.AgentDID,
 		onError:  onError,
