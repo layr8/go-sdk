@@ -85,10 +85,11 @@ func unmarshalPhoenixMsg(data []byte) (phoenixMessage, error) {
 
 // phoenixChannel implements the transport interface using WebSocket/Phoenix Channels.
 type phoenixChannel struct {
-	wsURL    string
-	apiKey   string
-	agentDID string
-	topic    string
+	wsURL       string
+	apiKey      string
+	agentDID    string
+	topic       string
+	dialContext func(ctx context.Context, network, addr string) (net.Conn, error)
 
 	conn *websocket.Conn
 	mu   sync.Mutex // protects conn writes, refCounter, and reconnecting
@@ -110,13 +111,14 @@ type phoenixChannel struct {
 	done chan struct{}
 }
 
-func newPhoenixChannel(wsURL, apiKey, agentDID string) *phoenixChannel {
+func newPhoenixChannel(wsURL, apiKey, agentDID string, dialContext func(ctx context.Context, network, addr string) (net.Conn, error)) *phoenixChannel {
 	return &phoenixChannel{
-		wsURL:    wsURL,
-		apiKey:   apiKey,
-		agentDID: agentDID,
-		topic:    fmt.Sprintf("plugins:%s", agentDID),
-		done:     make(chan struct{}),
+		wsURL:       wsURL,
+		apiKey:      apiKey,
+		agentDID:    agentDID,
+		dialContext: dialContext,
+		topic:       fmt.Sprintf("plugins:%s", agentDID),
+		done:        make(chan struct{}),
 	}
 }
 
@@ -139,17 +141,21 @@ func (c *phoenixChannel) dial(ctx context.Context) error {
 	u.RawQuery = q.Encode()
 
 	// Connect WebSocket
-	// Use a custom dialer that resolves *.localhost to loopback (RFC 6761).
-	// Go's net package doesn't implement this, unlike curl and browsers.
-	dialer := websocket.Dialer{
-		HandshakeTimeout: 10 * time.Second,
-		NetDialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+	dialFn := c.dialContext
+	if dialFn == nil {
+		// Default: resolve *.localhost to loopback (RFC 6761).
+		// Go's net package doesn't implement this, unlike curl and browsers.
+		dialFn = func(ctx context.Context, network, addr string) (net.Conn, error) {
 			host, port, err := net.SplitHostPort(addr)
 			if err == nil && isLocalhost(host) {
 				addr = net.JoinHostPort("127.0.0.1", port)
 			}
 			return (&net.Dialer{}).DialContext(ctx, network, addr)
-		},
+		}
+	}
+	dialer := websocket.Dialer{
+		HandshakeTimeout: 10 * time.Second,
+		NetDialContext:   dialFn,
 	}
 	conn, _, err := dialer.DialContext(ctx, u.String(), nil)
 	if err != nil {

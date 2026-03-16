@@ -1,7 +1,9 @@
 package layr8
 
 import (
+	"context"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"strings"
@@ -21,6 +23,11 @@ type Config struct {
 	// If empty, an ephemeral DID is created on Connect().
 	// Fallback: LAYR8_AGENT_DID environment variable.
 	AgentDID string
+
+	// DialContext, if set, overrides the default TCP dialer for the
+	// WebSocket connection. Use this for custom network transports
+	// (e.g., vsock in Nitro Enclaves).
+	DialContext func(ctx context.Context, network, addr string) (net.Conn, error)
 }
 
 // resolveConfig fills empty fields from environment variables and validates required fields.
