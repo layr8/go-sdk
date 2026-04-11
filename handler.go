@@ -31,10 +31,7 @@ func (r *handlerRegistry) register(msgType string, fn HandlerFunc, opts ...Handl
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if _, exists := r.handlers[msgType]; exists {
-		return fmt.Errorf("handler already registered for message type %q", msgType)
-	}
-
+	// Allow re-registration (overwrite) — needed for plugin hot-reload and multi-agent setups
 	o := handlerDefaults()
 	for _, opt := range opts {
 		opt(&o)
