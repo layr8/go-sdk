@@ -88,6 +88,7 @@ type phoenixChannel struct {
 	wsURL       string
 	apiKey      string
 	agentDID    string
+	persistent  bool
 	topic       string
 	dialContext func(ctx context.Context, network, addr string) (net.Conn, error)
 
@@ -111,11 +112,12 @@ type phoenixChannel struct {
 	done chan struct{}
 }
 
-func newPhoenixChannel(wsURL, apiKey, agentDID string, dialContext func(ctx context.Context, network, addr string) (net.Conn, error)) *phoenixChannel {
+func newPhoenixChannel(wsURL, apiKey, agentDID string, persistent bool, dialContext func(ctx context.Context, network, addr string) (net.Conn, error)) *phoenixChannel {
 	return &phoenixChannel{
 		wsURL:       wsURL,
 		apiKey:      apiKey,
 		agentDID:    agentDID,
+		persistent:  persistent,
 		dialContext: dialContext,
 		topic:       fmt.Sprintf("plugins:%s", agentDID),
 		done:        make(chan struct{}),
@@ -186,11 +188,16 @@ func (c *phoenixChannel) join(ctx context.Context, protocols []string) error {
 	ref := c.nextRef()
 	c.joinRef = ref
 
+	storage := "ephemeral"
+	if c.persistent {
+		storage = "persistent"
+	}
+
 	joinParams := map[string]interface{}{
 		"payload_types": protocols,
 		"did_spec": map[string]interface{}{
 			"mode":    "Create",
-			"storage": "ephemeral",
+			"storage": storage,
 			"type":    "plugin",
 			"verificationMethods": []map[string]string{
 				{"purpose": "authentication"},

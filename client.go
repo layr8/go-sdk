@@ -85,7 +85,7 @@ func (c *Client) Connect(ctx context.Context) error {
 
 	protocols := c.registry.protocols()
 
-	ch := newPhoenixChannel(c.cfg.NodeURL, c.cfg.APIKey, c.cfg.AgentDID, c.cfg.DialContext)
+	ch := newPhoenixChannel(c.cfg.NodeURL, c.cfg.APIKey, c.cfg.AgentDID, c.cfg.Persistent, c.cfg.DialContext)
 
 	// Wire up message handler
 	ch.setMessageHandler(c.handleInboundMessage)

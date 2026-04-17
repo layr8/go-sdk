@@ -94,7 +94,7 @@ func TestPhoenixChannel_Connect_JoinReply(t *testing.T) {
 	defer server.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/plugin_socket/websocket"
-	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test", nil)
+	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test", false, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -128,6 +128,92 @@ func TestPhoenixChannel_Connect_JoinReply(t *testing.T) {
 	}
 }
 
+func TestPhoenixChannel_JoinParams_EphemeralByDefault(t *testing.T) {
+	mock := newMockServer()
+	mock.onMsg = func(msg phoenixMessage) {
+		if msg.Event == "phx_join" {
+			mock.sendToClient(phoenixMessage{
+				JoinRef: msg.Ref,
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"ok","response":{}}`),
+			})
+		}
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(mock.handler))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/plugin_socket/websocket"
+	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test", false, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := ch.connect(ctx, []string{})
+	if err != nil {
+		t.Fatalf("connect() error: %v", err)
+	}
+	defer ch.close()
+
+	received := mock.getReceived()
+	joinMsg := received[0]
+	var payload map[string]interface{}
+	json.Unmarshal(joinMsg.Payload, &payload)
+
+	didSpec, ok := payload["did_spec"].(map[string]interface{})
+	if !ok {
+		t.Fatal("join payload should contain did_spec")
+	}
+	if didSpec["storage"] != "ephemeral" {
+		t.Errorf("did_spec.storage = %q, want %q", didSpec["storage"], "ephemeral")
+	}
+}
+
+func TestPhoenixChannel_JoinParams_PersistentWhenSet(t *testing.T) {
+	mock := newMockServer()
+	mock.onMsg = func(msg phoenixMessage) {
+		if msg.Event == "phx_join" {
+			mock.sendToClient(phoenixMessage{
+				JoinRef: msg.Ref,
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"ok","response":{}}`),
+			})
+		}
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(mock.handler))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/plugin_socket/websocket"
+	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test", true, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := ch.connect(ctx, []string{})
+	if err != nil {
+		t.Fatalf("connect() error: %v", err)
+	}
+	defer ch.close()
+
+	received := mock.getReceived()
+	joinMsg := received[0]
+	var payload map[string]interface{}
+	json.Unmarshal(joinMsg.Payload, &payload)
+
+	didSpec, ok := payload["did_spec"].(map[string]interface{})
+	if !ok {
+		t.Fatal("join payload should contain did_spec")
+	}
+	if didSpec["storage"] != "persistent" {
+		t.Errorf("did_spec.storage = %q, want %q", didSpec["storage"], "persistent")
+	}
+}
+
 func TestPhoenixChannel_Send(t *testing.T) {
 	mock := newMockServer()
 	mock.onMsg = func(msg phoenixMessage) {
@@ -155,7 +241,7 @@ func TestPhoenixChannel_Send(t *testing.T) {
 	defer server.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/plugin_socket/websocket"
-	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test", nil)
+	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test", false, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -204,7 +290,7 @@ func TestPhoenixChannel_ReceiveMessage(t *testing.T) {
 	defer server.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/plugin_socket/websocket"
-	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test", nil)
+	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test", false, nil)
 
 	var receivedPayload []byte
 	done := make(chan struct{})
@@ -255,7 +341,7 @@ func TestPhoenixChannel_SendAck(t *testing.T) {
 	defer server.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/plugin_socket/websocket"
-	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test", nil)
+	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test", false, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -311,7 +397,7 @@ func TestPhoenixChannel_JoinRejected_IncludesReason(t *testing.T) {
 	defer server.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/plugin_socket/websocket"
-	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test", nil)
+	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test", false, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -350,7 +436,7 @@ func TestPhoenixChannel_AssignedDID(t *testing.T) {
 	defer server.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/plugin_socket/websocket"
-	ch := newPhoenixChannel(wsURL, "test-key", "", nil)
+	ch := newPhoenixChannel(wsURL, "test-key", "", false, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -391,7 +477,7 @@ func TestPhoenixChannel_Send_ServerReply(t *testing.T) {
 	defer server.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/plugin_socket/websocket"
-	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test", nil)
+	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test", false, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -437,7 +523,7 @@ func TestPhoenixChannel_Send_ServerReject(t *testing.T) {
 	defer server.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/plugin_socket/websocket"
-	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test", nil)
+	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test", false, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -477,7 +563,7 @@ func TestPhoenixChannel_Send_Timeout(t *testing.T) {
 	defer server.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/plugin_socket/websocket"
-	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test", nil)
+	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test", false, nil)
 
 	connectCtx, connectCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer connectCancel()
@@ -518,7 +604,7 @@ func TestPhoenixChannel_ReconnectAfterDrop(t *testing.T) {
 	defer server.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/plugin_socket/websocket"
-	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test", nil)
+	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test", false, nil)
 
 	disconnected := make(chan struct{}, 1)
 	reconnected := make(chan struct{}, 1)
@@ -590,7 +676,7 @@ func TestPhoenixChannel_FailFastDuringReconnect(t *testing.T) {
 	defer server.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/plugin_socket/websocket"
-	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test", nil)
+	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test", false, nil)
 
 	disconnected := make(chan struct{})
 	ch.onDisconnect(func(err error) {
@@ -647,7 +733,7 @@ func TestPhoenixChannel_CloseStopsReconnect(t *testing.T) {
 	defer server.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/plugin_socket/websocket"
-	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test", nil)
+	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test", false, nil)
 
 	disconnected := make(chan struct{})
 	ch.onDisconnect(func(err error) {
@@ -705,7 +791,7 @@ func TestPhoenixChannel_SendFireAndForget(t *testing.T) {
 	defer server.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/plugin_socket/websocket"
-	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test", nil)
+	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test", false, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
