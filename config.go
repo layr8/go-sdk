@@ -24,6 +24,13 @@ type Config struct {
 	// Fallback: LAYR8_AGENT_DID environment variable.
 	AgentDID string
 
+	// Persistent, when true, tells the cloud-node to persist the DID
+	// and its keys across restarts. Use this for agents that need
+	// stable key material for cross-node DIDComm (e.g., services
+	// that send messages to agents on other nodes).
+	// Default: false (ephemeral storage).
+	Persistent bool
+
 	// DialContext, if set, overrides the default TCP dialer for the
 	// WebSocket connection. Use this for custom network transports
 	// (e.g., vsock in Nitro Enclaves).
