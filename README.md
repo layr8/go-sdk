@@ -88,6 +88,7 @@ type Message struct {
     ParentThreadID string          // parent thread for nested conversations
     Body           any             // message payload (serialized to JSON)
     Context        *MessageContext // cloud-node metadata (inbound only)
+    Attachments    []Attachment    // DIDComm v2 attachments (spec §5)
 }
 ```
 

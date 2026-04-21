@@ -8,6 +8,27 @@ import (
 	"github.com/google/uuid"
 )
 
+// Attachment represents a DIDComm v2 attachment (spec section 5).
+type Attachment struct {
+	ID          string         `json:"id,omitempty"`
+	Description string         `json:"description,omitempty"`
+	Filename    string         `json:"filename,omitempty"`
+	MediaType   string         `json:"media_type,omitempty"`
+	Format      string         `json:"format,omitempty"`
+	LastmodTime int64          `json:"lastmod_time,omitempty"`
+	ByteCount   int64          `json:"byte_count,omitempty"`
+	Data        AttachmentData `json:"data"`
+}
+
+// AttachmentData carries the attachment payload.
+type AttachmentData struct {
+	Base64 string   `json:"base64,omitempty"`
+	JSON   any      `json:"json,omitempty"`
+	JWS    any      `json:"jws,omitempty"`
+	Hash   string   `json:"hash,omitempty"`
+	Links  []string `json:"links,omitempty"`
+}
+
 // Message represents a DIDComm v2 message.
 type Message struct {
 	ID             string          `json:"id"`
@@ -18,6 +39,7 @@ type Message struct {
 	ParentThreadID string          `json:"pthid,omitempty"`
 	Body           any             `json:"-"`
 	Context        *MessageContext `json:"-"`
+	Attachments    []Attachment    `json:"-"` // DIDComm v2 attachments (spec §5)
 
 	// Internal fields
 	bodyRaw json.RawMessage // raw JSON body for lazy deserialization
@@ -67,6 +89,7 @@ type didcommEnvelope struct {
 	ThreadID       string          `json:"thid,omitempty"`
 	ParentThreadID string          `json:"pthid,omitempty"`
 	Body           json.RawMessage `json:"body"`
+	Attachments    []Attachment    `json:"attachments,omitempty"`
 }
 
 // marshalDIDComm serializes a Message into DIDComm JSON wire format.
@@ -92,6 +115,9 @@ func marshalDIDComm(msg *Message) ([]byte, error) {
 		ThreadID: msg.ThreadID,
 		ParentThreadID: msg.ParentThreadID,
 		Body:     bodyBytes,
+	}
+	if len(msg.Attachments) > 0 {
+		env.Attachments = msg.Attachments
 	}
 	return json.Marshal(env)
 }
@@ -124,13 +150,14 @@ func parseDIDComm(data json.RawMessage) (*Message, error) {
 	}
 
 	var plaintext struct {
-		ID    string          `json:"id"`
-		Type  string          `json:"type"`
-		From  string          `json:"from"`
-		To    []string        `json:"to"`
-		ThID  string          `json:"thid"`
-		PThID string          `json:"pthid"`
-		Body  json.RawMessage `json:"body"`
+		ID          string          `json:"id"`
+		Type        string          `json:"type"`
+		From        string          `json:"from"`
+		To          []string        `json:"to"`
+		ThID        string          `json:"thid"`
+		PThID       string          `json:"pthid"`
+		Body        json.RawMessage `json:"body"`
+		Attachments []Attachment    `json:"attachments"`
 	}
 	if err := json.Unmarshal(env.Plaintext, &plaintext); err != nil {
 		return nil, fmt.Errorf("parse plaintext: %w", err)
@@ -145,6 +172,7 @@ func parseDIDComm(data json.RawMessage) (*Message, error) {
 		ParentThreadID: plaintext.PThID,
 		bodyRaw:        plaintext.Body,
 	}
+	msg.Attachments = plaintext.Attachments
 
 	if env.Context != nil {
 		creds := make([]SenderCredential, len(env.Context.SenderCredentials))

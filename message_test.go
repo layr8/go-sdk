@@ -2,6 +2,8 @@ package layr8
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -184,4 +186,190 @@ func TestMessage_Ack(t *testing.T) {
 func TestMessage_Ack_Noop_WhenNoFn(t *testing.T) {
 	msg := &Message{ID: "msg-1"}
 	msg.Ack() // should not panic
+}
+
+// --- Attachment tests ---
+
+func TestMarshalAttachments(t *testing.T) {
+	msg := &Message{
+		ID:   "msg-1",
+		Type: "https://layr8.io/protocols/test/1.0/msg",
+		From: "did:web:alice",
+		To:   []string{"did:web:bob"},
+		Attachments: []Attachment{
+			{
+				ID:          "att-1",
+				Description: "test file",
+				Filename:    "test.txt",
+				MediaType:   "text/plain",
+				Format:      "base64",
+				Data: AttachmentData{
+					Base64: "aGVsbG8=",
+				},
+			},
+		},
+	}
+	data, err := marshalDIDComm(msg)
+	if err != nil {
+		t.Fatalf("marshalDIDComm() error: %v", err)
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	attVal, ok := raw["attachments"]
+	if !ok {
+		t.Fatalf("attachments key missing")
+	}
+	attSlice, ok := attVal.([]interface{})
+	if !ok || len(attSlice) != 1 {
+		t.Fatalf("attachments should be slice of length 1, got %v", attVal)
+	}
+	attMap, ok := attSlice[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("attachment element not a map")
+	}
+	if attMap["id"] != "att-1" {
+		t.Errorf("attachment id = %v, want %q", attMap["id"], "att-1")
+	}
+	if attMap["media_type"] != "text/plain" {
+		t.Errorf("media_type = %v, want %q", attMap["media_type"], "text/plain")
+	}
+	dataMap, ok := attMap["data"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("attachment data not a map")
+	}
+	if dataMap["base64"] != "aGVsbG8=" {
+		t.Errorf("data.base64 = %v, want %q", dataMap["base64"], "aGVsbG8=")
+	}
+}
+
+func TestMarshalNoAttachments(t *testing.T) {
+	msg := &Message{
+		ID:   "msg-2",
+		Type: "https://layr8.io/protocols/test/1.0/msg",
+		From: "did:web:alice",
+		To:   []string{"did:web:bob"},
+	}
+	data, err := marshalDIDComm(msg)
+	if err != nil {
+		t.Fatalf("marshalDIDComm() error: %v", err)
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if _, ok := raw["attachments"]; ok {
+		t.Errorf("attachments key should not be present when empty")
+	}
+}
+
+func TestParseAttachments(t *testing.T) {
+	payload := json.RawMessage(`{
+		"context": {
+			"recipient": "did:web:bob",
+			"authorized": true,
+			"sender_credentials": []
+		},
+		"plaintext": {
+			"id": "msg-3",
+			"type": "https://layr8.io/protocols/test/1.0/msg",
+			"from": "did:web:alice",
+			"to": ["did:web:bob"],
+			"attachments": [
+				{
+					"id": "att-2",
+					"description": "a doc",
+					"filename": "doc.pdf",
+					"media_type": "application/pdf",
+					"format": "base64",
+					"byte_count": 12345,
+					"data": {"base64":"AQID"}
+				}
+			],
+			"body": {}
+		}
+	}`)
+	msg, err := parseDIDComm(payload)
+	if err != nil {
+		t.Fatalf("parseDIDComm() error: %v", err)
+	}
+	if len(msg.Attachments) != 1 {
+		t.Fatalf("attachments length = %d, want 1", len(msg.Attachments))
+	}
+	att := msg.Attachments[0]
+	if att.ID != "att-2" {
+		t.Errorf("ID = %q, want %q", att.ID, "att-2")
+	}
+	if att.Description != "a doc" {
+		t.Errorf("Description = %q, want %q", att.Description, "a doc")
+	}
+	if att.Filename != "doc.pdf" {
+		t.Errorf("Filename = %q, want %q", att.Filename, "doc.pdf")
+	}
+	if att.MediaType != "application/pdf" {
+		t.Errorf("MediaType = %q, want %q", att.MediaType, "application/pdf")
+	}
+	if att.Format != "base64" {
+		t.Errorf("Format = %q, want %q", att.Format, "base64")
+	}
+	if att.ByteCount != 12345 {
+		t.Errorf("ByteCount = %d, want %d", att.ByteCount, 12345)
+	}
+	if att.Data.Base64 != "AQID" {
+		t.Errorf("Data.Base64 = %q, want %q", att.Data.Base64, "AQID")
+	}
+}
+
+func TestAttachmentRoundTrip(t *testing.T) {
+	msg := &Message{
+		ID:   "msg-4",
+		Type: "https://layr8.io/protocols/test/1.0/msg",
+		From: "did:web:alice",
+		To:   []string{"did:web:bob"},
+		Attachments: []Attachment{
+			{
+				ID:        "rt-1",
+				MediaType: "application/json",
+				Data: AttachmentData{
+					JSON: map[string]any{"key": "value"},
+				},
+			},
+			{
+				ID:        "rt-2",
+				MediaType: "text/plain",
+				Data: AttachmentData{
+					Base64: "dGVzdA==",
+				},
+			},
+		},
+	}
+	marshaled, err := marshalDIDComm(msg)
+	if err != nil {
+		t.Fatalf("marshalDIDComm() error: %v", err)
+	}
+	envelope := fmt.Sprintf(`{"context":{"recipient":"did:web:bob","authorized":true,"sender_credentials":[]},"plaintext":%s}`, string(marshaled))
+	parsed, err := parseDIDComm(json.RawMessage(envelope))
+	if err != nil {
+		t.Fatalf("parseDIDComm() error: %v", err)
+	}
+	if len(parsed.Attachments) != 2 {
+		t.Fatalf("attachments length = %d, want 2", len(parsed.Attachments))
+	}
+	if parsed.Attachments[0].ID != "rt-1" {
+		t.Errorf("first attachment ID = %q, want %q", parsed.Attachments[0].ID, "rt-1")
+	}
+	if parsed.Attachments[1].ID != "rt-2" {
+		t.Errorf("second attachment ID = %q, want %q", parsed.Attachments[1].ID, "rt-2")
+	}
+	if parsed.Attachments[0].Data.JSON == nil {
+		t.Fatalf("first attachment JSON data is nil")
+	}
+	b, err := json.Marshal(parsed.Attachments[0].Data.JSON)
+	if err != nil {
+		t.Fatalf("marshal attachment JSON data: %v", err)
+	}
+	if !strings.Contains(string(b), `"key"`) || !strings.Contains(string(b), `"value"`) {
+		t.Errorf("attachment JSON does not contain expected key/value, got %s", string(b))
+	}
 }
