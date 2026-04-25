@@ -269,6 +269,14 @@ func (c *Client) runHandler(entry handlerEntry, msg *Message) {
 		}
 
 		if err := c.sendMessage(resp); err != nil {
+			// Fallback: tell the caller why the reply never made it.
+			// The didcomm/report-problem path uses a much simpler body,
+			// so it usually succeeds even when the original reply
+			// (e.g. a complex VC-signed PaymentReceipt) failed to
+			// marshal. If the underlying transport itself is broken
+			// the problem report will silent-fail too, but the
+			// SDKError below still records the original cause.
+			c.sendProblemReport(msg, fmt.Errorf("reply send failed: %w", err))
 			c.onError(SDKError{
 				Kind:      ErrTransportWrite,
 				MessageID: resp.ID,
