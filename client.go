@@ -268,7 +268,15 @@ func (c *Client) runHandler(entry handlerEntry, msg *Message) {
 			resp.ThreadID = msg.ID
 		}
 
-		c.sendMessage(resp)
+		if err := c.sendMessage(resp); err != nil {
+			c.onError(SDKError{
+				Kind:      ErrTransportWrite,
+				MessageID: resp.ID,
+				Type:      resp.Type,
+				Cause:     err,
+				Timestamp: time.Now(),
+			})
+		}
 	}
 }
 
