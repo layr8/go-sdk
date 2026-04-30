@@ -14,6 +14,26 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// WebSocket liveness defaults. These detect half-dead connections in tens of
+// seconds rather than relying on the upstream LB idle timeout (AWS NLB
+// default: 350s).
+//
+//   - pingPeriod: how often we send a WS-level ping frame to the server.
+//   - pongWait:   how long we wait for ANY incoming frame (pong or message)
+//     before declaring the connection dead. Must be > pingPeriod so a single
+//     missed pong does not trip the deadline.
+//   - writeWait:  how long any single WriteMessage / WriteControl may block
+//     before failing — bounds the time a stuck TCP write buffer can hold the
+//     mutex.
+//
+// Stored per-channel (not package vars) so tests can compress timings without
+// racing with goroutines from concurrent test runs.
+const (
+	defaultPongWait   = 60 * time.Second
+	defaultPingPeriod = 30 * time.Second
+	defaultWriteWait  = 10 * time.Second
+)
+
 // phoenixMessage is the internal representation of a Phoenix Channel message.
 // On the wire, it uses the V2 JSON array format: [join_ref, ref, topic, event, payload].
 type phoenixMessage struct {
@@ -110,6 +130,12 @@ type phoenixChannel struct {
 	assignedDIDVal string
 
 	done chan struct{}
+
+	// Liveness timings, defaulting to the package defaults. Tests may override
+	// before calling connect().
+	pongWait   time.Duration
+	pingPeriod time.Duration
+	writeWait  time.Duration
 }
 
 func newPhoenixChannel(wsURL, apiKey, agentDID string, persistent bool, dialContext func(ctx context.Context, network, addr string) (net.Conn, error)) *phoenixChannel {
@@ -121,6 +147,9 @@ func newPhoenixChannel(wsURL, apiKey, agentDID string, persistent bool, dialCont
 		dialContext: dialContext,
 		topic:       fmt.Sprintf("plugins:%s", agentDID),
 		done:        make(chan struct{}),
+		pongWait:    defaultPongWait,
+		pingPeriod:  defaultPingPeriod,
+		writeWait:   defaultWriteWait,
 	}
 }
 
@@ -164,6 +193,19 @@ func (c *phoenixChannel) dial(ctx context.Context) error {
 		return &ConnectionError{URL: c.wsURL, Reason: err.Error()}
 	}
 
+	// Application-level liveness check: reset the read deadline whenever ANY
+	// frame arrives (data or pong). Combined with the periodic pings sent by
+	// pingLoop, this detects half-dead connections (TCP alive but peer
+	// unresponsive) within ~pongWait — independent of any upstream LB idle
+	// timeout. Without this, ReadMessage blocks forever and pending Request()
+	// calls hang until the LB tears down the TCP connection (5+ minutes on
+	// AWS NLB defaults).
+	conn.SetReadDeadline(time.Now().Add(c.pongWait))
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(c.pongWait))
+		return nil
+	})
+
 	c.mu.Lock()
 	c.conn = conn
 	c.refCounter = 0
@@ -178,8 +220,11 @@ func (c *phoenixChannel) dial(ctx context.Context) error {
 		return err
 	}
 
-	// Start heartbeat
+	// Start heartbeat (Phoenix channel keepalive) and ping loop (WS-level
+	// liveness probe). Both are needed: heartbeat keeps the Phoenix channel
+	// from being reaped by the server, ping detects half-dead transports.
 	go c.heartbeatLoop()
+	go c.pingLoop(conn)
 
 	return nil
 }
@@ -361,7 +406,9 @@ func (c *phoenixChannel) readLoop() {
 			case <-c.done:
 				return
 			default:
-				// Connection dropped — reject pending refs and start reconnect.
+				// Connection dropped (TCP error, server close, OR read deadline
+				// exceeded — meaning no pong/data within pongWait, i.e. the
+				// connection is half-dead). Reject pending refs and reconnect.
 				c.rejectPendingRefs()
 				if c.disconnectFn != nil {
 					c.disconnectFn(err)
@@ -370,6 +417,8 @@ func (c *phoenixChannel) readLoop() {
 				return
 			}
 		}
+		// Successful read: reset deadline. Any incoming frame proves liveness.
+		conn.SetReadDeadline(time.Now().Add(c.pongWait))
 
 		msg, err := unmarshalPhoenixMsg(data)
 		if err != nil {
@@ -377,6 +426,31 @@ func (c *phoenixChannel) readLoop() {
 		}
 
 		c.handleInbound(msg)
+	}
+}
+
+// pingLoop sends a WebSocket-level ping every pingPeriod. Tied to the conn
+// passed in so each dial() spawns its own pingLoop that exits when its conn
+// dies. WriteControl is documented as safe to call concurrently with
+// WriteMessage, so this does not need to coordinate with writeMsg().
+func (c *phoenixChannel) pingLoop(conn *websocket.Conn) {
+	ticker := time.NewTicker(c.pingPeriod)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-c.done:
+			return
+		case <-ticker.C:
+			if err := conn.WriteControl(
+				websocket.PingMessage,
+				nil,
+				time.Now().Add(c.writeWait),
+			); err != nil {
+				// Write failed — readLoop will observe the same and trigger
+				// reconnect. Just exit this goroutine.
+				return
+			}
+		}
 	}
 }
 
@@ -536,6 +610,8 @@ func (c *phoenixChannel) writeMsg(msg phoenixMessage) error {
 	if err != nil {
 		return err
 	}
+	// Bound the time a stuck TCP write buffer can hold the mutex.
+	c.conn.SetWriteDeadline(time.Now().Add(c.writeWait))
 	return c.conn.WriteMessage(websocket.TextMessage, data)
 }
 
