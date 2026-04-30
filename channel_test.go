@@ -805,3 +805,97 @@ func TestPhoenixChannel_SendFireAndForget(t *testing.T) {
 		t.Fatalf("sendFireAndForget() error: %v", err)
 	}
 }
+
+// TestPhoenixChannel_DetectsHalfDeadConnection verifies that the SDK detects
+// a half-dead WebSocket (TCP alive but server unresponsive to pings) within
+// pongWait and triggers reconnect, rather than hanging indefinitely.
+//
+// Regression test for the bug where the readLoop blocked on conn.ReadMessage()
+// without a read deadline. A silently-broken connection (e.g. dropped by an
+// upstream load balancer that fails to send RST/FIN) was undetectable until
+// AWS NLB's 350s idle timeout fired — causing 5+ min outages observed in prod.
+func TestPhoenixChannel_DetectsHalfDeadConnection(t *testing.T) {
+	var connCount int
+	var muSrv sync.Mutex
+
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		muSrv.Lock()
+		connCount++
+		first := connCount == 1
+		muSrv.Unlock()
+
+		if first {
+			// First connection: silently drop pings (do NOT auto-pong).
+			// This simulates a half-dead WS where the upstream is gone but
+			// our TCP connection has not yet observed RST/FIN.
+			conn.SetPingHandler(func(string) error { return nil })
+		}
+		// Reconnect (second conn): default ping handler (auto-pongs) so the
+		// reconnect succeeds and the test can observe onReconnect firing.
+
+		for {
+			_, data, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			msg, err := unmarshalPhoenixMsg(data)
+			if err != nil {
+				continue
+			}
+			if msg.Event == "phx_join" {
+				reply := phoenixMessage{
+					JoinRef: msg.Ref,
+					Ref:     msg.Ref,
+					Topic:   msg.Topic,
+					Event:   "phx_reply",
+					Payload: json.RawMessage(`{"status":"ok","response":{}}`),
+				}
+				replyData, _ := marshalPhoenixMsg(reply)
+				conn.WriteMessage(websocket.TextMessage, replyData)
+			}
+		}
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(handler))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/plugin_socket/websocket"
+	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test", false, nil)
+	// Compress timings for a fast test. Per-channel state — no leak to other
+	// tests, no race on package-level vars.
+	ch.pongWait = 800 * time.Millisecond
+	ch.pingPeriod = 300 * time.Millisecond
+
+	reconnected := make(chan struct{}, 1)
+	ch.onReconnect(func() {
+		select {
+		case reconnected <- struct{}{}:
+		default:
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := ch.connect(ctx, []string{}); err != nil {
+		t.Fatalf("connect() error: %v", err)
+	}
+	defer ch.close()
+
+	// Within ~pongWait + ping period + reconnect time, expect reconnect to
+	// fire. Pre-fix, this test hangs forever because readLoop blocks on
+	// conn.ReadMessage() with no deadline.
+	select {
+	case <-reconnected:
+		// detected and recovered
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout: SDK did not detect half-dead connection within 3s (pongWait=800ms)")
+	}
+}
