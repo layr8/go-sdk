@@ -32,6 +32,25 @@ const (
 	defaultPongWait   = 60 * time.Second
 	defaultPingPeriod = 30 * time.Second
 	defaultWriteWait  = 10 * time.Second
+	// heartbeatInterval is the cadence at which Phoenix-layer `heartbeat`
+	// events are sent to the channel topic `"phoenix"`. Must match
+	// what cloud-node expects.
+	heartbeatInterval = 30 * time.Second
+	// heartbeatMaxSilent is the maximum time the channel may go without
+	// observing ANY application-layer inbound frame (phx_reply,
+	// "message" event, etc.) before the Phoenix-heartbeat watchdog
+	// trips and forces a reconnect.
+	//
+	// Distinct from pongWait above: pongWait is the WS-level read
+	// deadline, reset on every frame INCLUDING server-emitted pongs.
+	// cowboy auto-pongs at the WS protocol layer even when the
+	// per-tenant Phoenix Channel GenServer has stopped processing —
+	// pongWait alone cannot distinguish "TCP alive + Channel hung"
+	// from "TCP alive + Channel healthy".
+	//
+	// 2.5× heartbeatInterval — tolerates one missed reply, trips on
+	// two consecutive misses. Closes layr8/go-sdk#10.
+	heartbeatMaxSilent = 75 * time.Second
 )
 
 // phoenixMessage is the internal representation of a Phoenix Channel message.
@@ -136,6 +155,14 @@ type phoenixChannel struct {
 	pongWait   time.Duration
 	pingPeriod time.Duration
 	writeWait  time.Duration
+
+	// lastAppFrameAt records the timestamp of the most recently observed
+	// application-layer inbound frame (phx_reply, "message", phx_error,
+	// etc. — anything that flows through readLoop). Distinct from the
+	// WS-level read deadline reset by pongs: this measures application
+	// liveness, which catches cloud-node Phoenix Channel GenServer hangs
+	// that WS pong/pong cannot detect. Read+write under mu.
+	lastAppFrameAt time.Time
 }
 
 func newPhoenixChannel(wsURL, apiKey, agentDID string, persistent bool, dialContext func(ctx context.Context, network, addr string) (net.Conn, error)) *phoenixChannel {
@@ -209,6 +236,10 @@ func (c *phoenixChannel) dial(ctx context.Context) error {
 	c.mu.Lock()
 	c.conn = conn
 	c.refCounter = 0
+	// Reset the application-layer watchdog clock so the first heartbeat
+	// tick after (re)connect measures silence from "just now", not from
+	// before the disconnect.
+	c.lastAppFrameAt = time.Now()
 	c.mu.Unlock()
 
 	// Start reader goroutine
@@ -417,8 +448,20 @@ func (c *phoenixChannel) readLoop() {
 				return
 			}
 		}
-		// Successful read: reset deadline. Any incoming frame proves liveness.
-		conn.SetReadDeadline(time.Now().Add(c.pongWait))
+		// Successful read: reset both watchdogs.
+		// 1. WS-level read deadline — any frame (including pongs handled
+		//    by the SetPongHandler above) proves TCP liveness.
+		// 2. Application-layer watchdog — only application frames flow
+		//    through ReadMessage (pongs are control frames handled by
+		//    gorilla internally and never reach here), so any successful
+		//    ReadMessage proves the cloud-node Phoenix Channel
+		//    GenServer is still processing — distinct from cowboy
+		//    auto-ponging at the WS layer.
+		now := time.Now()
+		conn.SetReadDeadline(now.Add(c.pongWait))
+		c.mu.Lock()
+		c.lastAppFrameAt = now
+		c.mu.Unlock()
 
 		msg, err := unmarshalPhoenixMsg(data)
 		if err != nil {
@@ -572,7 +615,7 @@ func (c *phoenixChannel) handleInbound(msg phoenixMessage) {
 }
 
 func (c *phoenixChannel) heartbeatLoop() {
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(heartbeatInterval)
 	defer ticker.Stop()
 
 	for {
@@ -580,6 +623,24 @@ func (c *phoenixChannel) heartbeatLoop() {
 		case <-c.done:
 			return
 		case <-ticker.C:
+			// Application-layer watchdog: if no inbound app frame has
+			// been observed within heartbeatMaxSilent, the cloud-node
+			// Phoenix Channel GenServer is hung even though TCP +
+			// cowboy pong are likely fine. Force-close the connection
+			// so the reconnect path takes over.
+			c.mu.Lock()
+			conn := c.conn
+			silentSince := c.lastAppFrameAt
+			c.mu.Unlock()
+
+			if conn != nil && time.Since(silentSince) > heartbeatMaxSilent {
+				// Closing the conn makes ReadMessage in the read loop
+				// return an error, which triggers reconnectLoop via the
+				// existing path.
+				conn.Close()
+				return
+			}
+
 			msg := phoenixMessage{
 				Ref:     c.nextRef(),
 				Topic:   "phoenix",
