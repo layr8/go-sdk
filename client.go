@@ -69,6 +69,20 @@ func (c *Client) Handle(msgType string, fn HandlerFunc, opts ...HandlerOption) e
 	return c.registry.register(msgType, fn, opts...)
 }
 
+// HandleAll registers a catch-all handler for any message type not matched
+// by a specific Handle() registration. Must be called before Connect().
+// The cloud-node is told to route all message types to this agent via "*".
+func (c *Client) HandleAll(fn HandlerFunc, opts ...HandlerOption) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.connected {
+		return ErrAlreadyConnected
+	}
+
+	return c.registry.registerCatchAll(fn, opts...)
+}
+
 // Connect establishes the WebSocket connection and joins the Phoenix Channel
 // with the protocols derived from registered handlers.
 func (c *Client) Connect(ctx context.Context) error {
@@ -83,7 +97,7 @@ func (c *Client) Connect(ctx context.Context) error {
 	}
 	c.mu.Unlock()
 
-	protocols := c.registry.protocols()
+	protocols := c.registry.payloadTypes()
 
 	ch := newPhoenixChannel(c.cfg.NodeURL, c.cfg.APIKey, c.cfg.AgentDID, c.cfg.Persistent, c.cfg.DialContext)
 

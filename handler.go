@@ -19,6 +19,7 @@ type handlerEntry struct {
 type handlerRegistry struct {
 	mu       sync.RWMutex
 	handlers map[string]handlerEntry // message type → handler
+	catchAll *handlerEntry           // wildcard catch-all handler
 }
 
 func newHandlerRegistry() *handlerRegistry {
@@ -47,37 +48,67 @@ func (r *handlerRegistry) register(msgType string, fn HandlerFunc, opts ...Handl
 	return nil
 }
 
+func (r *handlerRegistry) registerCatchAll(fn HandlerFunc, opts ...HandlerOption) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.catchAll != nil {
+		return fmt.Errorf("catch-all handler already registered")
+	}
+
+	o := handlerDefaults()
+	for _, opt := range opts {
+		opt(&o)
+	}
+
+	r.catchAll = &handlerEntry{
+		fn:        fn,
+		manualAck: o.manualAck,
+	}
+	return nil
+}
+
 func (r *handlerRegistry) lookup(msgType string) (handlerEntry, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	entry, ok := r.handlers[msgType]
-	return entry, ok
+	if entry, ok := r.handlers[msgType]; ok {
+		return entry, true
+	}
+	if r.catchAll != nil {
+		return *r.catchAll, true
+	}
+	return handlerEntry{}, false
 }
 
-// protocols returns the unique protocol base URIs derived from registered handler message types.
-// For example, "https://layr8.io/protocols/echo/1.0/request" derives "https://layr8.io/protocols/echo/1.0".
-// Always includes "report-problem" so the cloud node routes problem reports to this agent.
-func (r *handlerRegistry) protocols() []string {
+// payloadTypes returns the payload_types list for the join params.
+// Includes unique protocol base URIs derived from registered handlers,
+// always includes "report-problem", and appends "*" if a catch-all is registered.
+func (r *handlerRegistry) payloadTypes() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	seen := make(map[string]struct{})
-	protocols := make([]string, 0)
+	types := make([]string, 0)
 
 	// Always register for problem reports — the SDK handles them internally
 	// and the cloud node needs to know to route them to connected plugins.
 	const problemReportProtocol = "https://didcomm.org/report-problem/2.0"
 	seen[problemReportProtocol] = struct{}{}
-	protocols = append(protocols, problemReportProtocol)
+	types = append(types, problemReportProtocol)
 
 	for msgType := range r.handlers {
 		proto := deriveProtocol(msgType)
 		if _, ok := seen[proto]; !ok {
 			seen[proto] = struct{}{}
-			protocols = append(protocols, proto)
+			types = append(types, proto)
 		}
 	}
-	return protocols
+
+	if r.catchAll != nil {
+		types = append(types, "*")
+	}
+
+	return types
 }
 
 // deriveProtocol extracts the protocol base URI by removing the last path segment.

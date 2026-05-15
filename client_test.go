@@ -99,6 +99,43 @@ func TestClient_Handle_BeforeConnect(t *testing.T) {
 	}
 }
 
+func TestClient_HandleAll_BeforeConnect(t *testing.T) {
+	client, _ := NewClient(Config{
+		NodeURL:  "ws://localhost:4000",
+		APIKey:   "test-key",
+		AgentDID: "did:web:test",
+	}, discardErrors)
+
+	err := client.HandleAll(
+		func(msg *Message) (*Message, error) { return nil, nil },
+	)
+	if err != nil {
+		t.Fatalf("HandleAll() before Connect should succeed: %v", err)
+	}
+}
+
+func TestClient_HandleAll_AfterConnect(t *testing.T) {
+	_, _, wsURL := setupMockServer(t)
+
+	client, _ := NewClient(Config{
+		NodeURL:  wsURL,
+		APIKey:   "test-key",
+		AgentDID: "did:web:test",
+	}, discardErrors)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client.Connect(ctx)
+	defer client.Close()
+
+	err := client.HandleAll(
+		func(msg *Message) (*Message, error) { return nil, nil },
+	)
+	if err == nil {
+		t.Fatal("HandleAll() after Connect should return error")
+	}
+}
+
 func TestClient_Handle_AfterConnect(t *testing.T) {
 	_, _, wsURL := setupMockServer(t)
 
