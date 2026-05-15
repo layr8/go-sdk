@@ -2,6 +2,7 @@ package layr8
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -69,6 +70,20 @@ func (c *Client) Handle(msgType string, fn HandlerFunc, opts ...HandlerOption) e
 	return c.registry.register(msgType, fn, opts...)
 }
 
+// HandleAll registers a catch-all handler for any message type not matched
+// by a specific Handle() registration. Must be called before Connect().
+// The cloud-node is told to route all message types to this agent via "*".
+func (c *Client) HandleAll(fn HandlerFunc, opts ...HandlerOption) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.connected {
+		return ErrAlreadyConnected
+	}
+
+	return c.registry.registerCatchAll(fn, opts...)
+}
+
 // Connect establishes the WebSocket connection and joins the Phoenix Channel
 // with the protocols derived from registered handlers.
 func (c *Client) Connect(ctx context.Context) error {
@@ -83,7 +98,7 @@ func (c *Client) Connect(ctx context.Context) error {
 	}
 	c.mu.Unlock()
 
-	protocols := c.registry.protocols()
+	protocols := c.registry.payloadTypes()
 
 	ch := newPhoenixChannel(c.cfg.NodeURL, c.cfg.APIKey, c.cfg.AgentDID, c.cfg.Persistent, c.cfg.DialContext)
 
@@ -186,9 +201,11 @@ func (c *Client) handleInboundMessage(payload []byte) {
 	}
 
 	// Problem reports that don't match a pending Request are orphaned
-	// (the original request already timed out). Ack and report, don't ErrNoHandler.
+	// (the original request already timed out). Report, don't ErrNoHandler.
 	if isProblemReport(msg.Type) {
-		c.transport.sendAck([]string{msg.ID})
+		if !c.transport.replyMode() {
+			c.transport.sendAck([]string{msg.ID})
+		}
 		var prob ProblemReportError
 		if err := msg.UnmarshalBody(&prob); err == nil {
 			c.onError(SDKError{
@@ -200,34 +217,95 @@ func (c *Client) handleInboundMessage(payload []byte) {
 				Timestamp: time.Now(),
 			})
 		}
+		if c.transport.replyMode() {
+			c.sendDispatchReply("handled", "", "")
+		}
 		return
 	}
 
 	// Route to registered handler
 	entry, ok := c.registry.lookup(msg.Type)
 	if !ok {
-		c.onError(SDKError{
-			Kind:      ErrNoHandler,
-			MessageID: msg.ID,
-			Type:      msg.Type,
-			From:      msg.From,
-			Timestamp: time.Now(),
-		})
+		if c.transport.replyMode() {
+			// No handler and no catch-all: auto-pass
+			c.sendDispatchReply("pass", "", "")
+		} else {
+			c.onError(SDKError{
+				Kind:      ErrNoHandler,
+				MessageID: msg.ID,
+				Type:      msg.Type,
+				From:      msg.From,
+				Timestamp: time.Now(),
+			})
+		}
 		return
 	}
 
-	// Auto-ack before handler (unless manual ack)
-	if !entry.manualAck {
-		c.transport.sendAck([]string{msg.ID})
+	if c.transport.replyMode() {
+		// New mode: run handler synchronously (in goroutine), then send dispatch_reply
+		go c.runHandlerWithReply(entry, msg)
 	} else {
-		// Set up manual ack function
-		msg.ackFn = func(id string) {
-			c.transport.sendAck([]string{id})
+		// Legacy mode: ack then run handler
+		if !entry.manualAck {
+			c.transport.sendAck([]string{msg.ID})
+		} else {
+			msg.ackFn = func(id string) {
+				c.transport.sendAck([]string{id})
+			}
+		}
+		go c.runHandler(entry, msg)
+	}
+}
+
+// runHandlerWithReply runs a handler and sends dispatch_reply based on the result.
+func (c *Client) runHandlerWithReply(entry handlerEntry, msg *Message) {
+	var resp *Message
+	var handlerErr error
+
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				handlerErr = fmt.Errorf("handler panic: %v", r)
+				c.onError(SDKError{
+					Kind:      ErrHandlerPanic,
+					MessageID: msg.ID,
+					Type:      msg.Type,
+					From:      msg.From,
+					Cause:     handlerErr,
+					Timestamp: time.Now(),
+				})
+			}
+		}()
+		resp, handlerErr = entry.fn(msg)
+	}()
+
+	if handlerErr != nil {
+		if errors.Is(handlerErr, ErrPass) {
+			c.sendDispatchReply("pass", "", "")
+			return
+		}
+		c.sendProblemReport(msg, handlerErr)
+		c.sendDispatchReply("error", handlerErr.Error(), handlerErr.Error())
+		return
+	}
+
+	if resp != nil {
+		c.autoFillResponse(resp, msg)
+		if err := c.sendMessage(resp); err != nil {
+			c.sendProblemReport(msg, fmt.Errorf("reply send failed: %w", err))
+			c.onError(SDKError{
+				Kind:      ErrTransportWrite,
+				MessageID: resp.ID,
+				Type:      resp.Type,
+				Cause:     err,
+				Timestamp: time.Now(),
+			})
+			c.sendDispatchReply("error", err.Error(), err.Error())
+			return
 		}
 	}
 
-	// Run handler asynchronously
-	go c.runHandler(entry, msg)
+	c.sendDispatchReply("handled", "", "")
 }
 
 func (c *Client) runHandler(entry handlerEntry, msg *Message) {
@@ -249,33 +327,13 @@ func (c *Client) runHandler(entry handlerEntry, msg *Message) {
 	resp, err := entry.fn(msg)
 
 	if err != nil {
-		// Send problem report
 		c.sendProblemReport(msg, err)
 		return
 	}
 
 	if resp != nil {
-		// Auto-fill response fields
-		if resp.From == "" {
-			resp.From = c.agentDID
-		}
-		if len(resp.To) == 0 && msg.From != "" {
-			resp.To = []string{msg.From}
-		}
-		if resp.ThreadID == "" && msg.ThreadID != "" {
-			resp.ThreadID = msg.ThreadID
-		} else if resp.ThreadID == "" {
-			resp.ThreadID = msg.ID
-		}
-
+		c.autoFillResponse(resp, msg)
 		if err := c.sendMessage(resp); err != nil {
-			// Fallback: tell the caller why the reply never made it.
-			// The didcomm/report-problem path uses a much simpler body,
-			// so it usually succeeds even when the original reply
-			// (e.g. a complex VC-signed PaymentReceipt) failed to
-			// marshal. If the underlying transport itself is broken
-			// the problem report will silent-fail too, but the
-			// SDKError below still records the original cause.
 			c.sendProblemReport(msg, fmt.Errorf("reply send failed: %w", err))
 			c.onError(SDKError{
 				Kind:      ErrTransportWrite,
@@ -286,6 +344,33 @@ func (c *Client) runHandler(entry handlerEntry, msg *Message) {
 			})
 		}
 	}
+}
+
+func (c *Client) autoFillResponse(resp *Message, original *Message) {
+	if resp.From == "" {
+		resp.From = c.agentDID
+	}
+	if len(resp.To) == 0 && original.From != "" {
+		resp.To = []string{original.From}
+	}
+	if resp.ThreadID == "" && original.ThreadID != "" {
+		resp.ThreadID = original.ThreadID
+	} else if resp.ThreadID == "" {
+		resp.ThreadID = original.ID
+	}
+}
+
+// sendDispatchReply sends a dispatch_reply event to the cloud-node.
+func (c *Client) sendDispatchReply(status, code, message string) {
+	reply := map[string]string{"status": status}
+	if code != "" {
+		reply["code"] = code
+	}
+	if message != "" {
+		reply["message"] = message
+	}
+	data, _ := json.Marshal(reply)
+	c.transport.sendFireAndForget("dispatch_reply", data)
 }
 
 func (c *Client) sendProblemReport(original *Message, handlerErr error) {

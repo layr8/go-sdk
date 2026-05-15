@@ -16,6 +16,37 @@ import (
 // discardErrors is a no-op ErrorHandler used in tests that don't assert error handler behavior.
 var discardErrors = func(SDKError) {}
 
+// setupMockServerWithCapabilities creates a mock server that returns capabilities in the join reply.
+func setupMockServerWithCapabilities(t *testing.T) (*mockPhoenixServer, *httptest.Server, string) {
+	t.Helper()
+	mock := newMockServer()
+	mock.onMsg = func(msg phoenixMessage) {
+		if msg.Event == "phx_join" {
+			mock.sendToClient(phoenixMessage{
+				JoinRef: msg.Ref,
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"ok","response":{"did":"did:web:node:test","capabilities":["reply_protocol/1","wildcard/1"]}}`),
+			})
+			return
+		}
+		// Reply OK to all other events
+		if msg.Ref != "" {
+			mock.sendToClient(phoenixMessage{
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"ok","response":{}}`),
+			})
+		}
+	}
+	server := httptest.NewServer(http.HandlerFunc(mock.handler))
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/plugin_socket/websocket"
+	t.Cleanup(server.Close)
+	return mock, server, wsURL
+}
+
 func setupMockServer(t *testing.T) (*mockPhoenixServer, *httptest.Server, string) {
 	t.Helper()
 	mock := newMockServer()
@@ -96,6 +127,43 @@ func TestClient_Handle_BeforeConnect(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("Handle() before Connect should succeed: %v", err)
+	}
+}
+
+func TestClient_HandleAll_BeforeConnect(t *testing.T) {
+	client, _ := NewClient(Config{
+		NodeURL:  "ws://localhost:4000",
+		APIKey:   "test-key",
+		AgentDID: "did:web:test",
+	}, discardErrors)
+
+	err := client.HandleAll(
+		func(msg *Message) (*Message, error) { return nil, nil },
+	)
+	if err != nil {
+		t.Fatalf("HandleAll() before Connect should succeed: %v", err)
+	}
+}
+
+func TestClient_HandleAll_AfterConnect(t *testing.T) {
+	_, _, wsURL := setupMockServer(t)
+
+	client, _ := NewClient(Config{
+		NodeURL:  wsURL,
+		APIKey:   "test-key",
+		AgentDID: "did:web:test",
+	}, discardErrors)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client.Connect(ctx)
+	defer client.Close()
+
+	err := client.HandleAll(
+		func(msg *Message) (*Message, error) { return nil, nil },
+	)
+	if err == nil {
+		t.Fatal("HandleAll() after Connect should return error")
 	}
 }
 
@@ -1236,5 +1304,387 @@ func TestClient_OnError_HandlerPanic(t *testing.T) {
 	}
 	if !problemReportFound {
 		t.Error("handler panic should result in a problem report being sent")
+	}
+}
+
+// --- dispatch_reply tests (new reply protocol mode) ---
+
+func TestClient_DispatchReply_Handled_NilReturn(t *testing.T) {
+	mock, _, wsURL := setupMockServerWithCapabilities(t)
+
+	client, _ := NewClient(Config{
+		NodeURL:  wsURL,
+		APIKey:   "test-key",
+		AgentDID: "did:web:alice",
+	}, discardErrors)
+	client.Handle("https://layr8.io/protocols/echo/1.0/request",
+		func(msg *Message) (*Message, error) {
+			return nil, nil
+		},
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client.Connect(ctx)
+	defer client.Close()
+
+	inbound, _ := json.Marshal(map[string]interface{}{
+		"plaintext": map[string]interface{}{
+			"id":   "req-1",
+			"type": "https://layr8.io/protocols/echo/1.0/request",
+			"from": "did:web:bob",
+			"to":   []string{"did:web:alice"},
+			"body": map[string]string{"message": "ping"},
+		},
+	})
+	mock.sendToClient(phoenixMessage{
+		Topic:   "plugins:did:web:alice",
+		Event:   "message",
+		Payload: inbound,
+	})
+
+	time.Sleep(500 * time.Millisecond)
+	received := mock.getReceived()
+
+	var dispatchReply map[string]interface{}
+	for _, msg := range received {
+		if msg.Event == "dispatch_reply" {
+			json.Unmarshal(msg.Payload, &dispatchReply)
+			break
+		}
+	}
+	if dispatchReply == nil {
+		t.Fatal("should have sent dispatch_reply event")
+	}
+	if dispatchReply["status"] != "handled" {
+		t.Errorf("dispatch_reply status = %v, want handled", dispatchReply["status"])
+	}
+}
+
+func TestClient_DispatchReply_Handled_WithResponse(t *testing.T) {
+	mock, _, wsURL := setupMockServerWithCapabilities(t)
+
+	client, _ := NewClient(Config{
+		NodeURL:  wsURL,
+		APIKey:   "test-key",
+		AgentDID: "did:web:alice",
+	}, discardErrors)
+	client.Handle("https://layr8.io/protocols/echo/1.0/request",
+		func(msg *Message) (*Message, error) {
+			return &Message{
+				Type: "https://layr8.io/protocols/echo/1.0/response",
+				Body: map[string]string{"echo": "pong"},
+			}, nil
+		},
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client.Connect(ctx)
+	defer client.Close()
+
+	inbound, _ := json.Marshal(map[string]interface{}{
+		"plaintext": map[string]interface{}{
+			"id":   "req-1",
+			"type": "https://layr8.io/protocols/echo/1.0/request",
+			"from": "did:web:bob",
+			"to":   []string{"did:web:alice"},
+			"body": map[string]string{"message": "ping"},
+		},
+	})
+	mock.sendToClient(phoenixMessage{
+		Topic:   "plugins:did:web:alice",
+		Event:   "message",
+		Payload: inbound,
+	})
+
+	time.Sleep(500 * time.Millisecond)
+	received := mock.getReceived()
+
+	var dispatchReply map[string]interface{}
+	var responseFound bool
+	for _, msg := range received {
+		if msg.Event == "dispatch_reply" {
+			json.Unmarshal(msg.Payload, &dispatchReply)
+		}
+		if msg.Event == "message" {
+			var outbound struct{ Type string `json:"type"` }
+			json.Unmarshal(msg.Payload, &outbound)
+			if outbound.Type == "https://layr8.io/protocols/echo/1.0/response" {
+				responseFound = true
+			}
+		}
+	}
+	if dispatchReply == nil {
+		t.Fatal("should have sent dispatch_reply event")
+	}
+	if dispatchReply["status"] != "handled" {
+		t.Errorf("dispatch_reply status = %v, want handled", dispatchReply["status"])
+	}
+	if !responseFound {
+		t.Error("should have sent the response message")
+	}
+}
+
+func TestClient_DispatchReply_Pass(t *testing.T) {
+	mock, _, wsURL := setupMockServerWithCapabilities(t)
+
+	client, _ := NewClient(Config{
+		NodeURL:  wsURL,
+		APIKey:   "test-key",
+		AgentDID: "did:web:alice",
+	}, discardErrors)
+	client.Handle("https://layr8.io/protocols/echo/1.0/request",
+		func(msg *Message) (*Message, error) {
+			return nil, ErrPass
+		},
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client.Connect(ctx)
+	defer client.Close()
+
+	inbound, _ := json.Marshal(map[string]interface{}{
+		"plaintext": map[string]interface{}{
+			"id":   "req-1",
+			"type": "https://layr8.io/protocols/echo/1.0/request",
+			"from": "did:web:bob",
+			"to":   []string{"did:web:alice"},
+			"body": map[string]string{"message": "ping"},
+		},
+	})
+	mock.sendToClient(phoenixMessage{
+		Topic:   "plugins:did:web:alice",
+		Event:   "message",
+		Payload: inbound,
+	})
+
+	time.Sleep(500 * time.Millisecond)
+	received := mock.getReceived()
+
+	var dispatchReply map[string]interface{}
+	for _, msg := range received {
+		if msg.Event == "dispatch_reply" {
+			json.Unmarshal(msg.Payload, &dispatchReply)
+			break
+		}
+	}
+	if dispatchReply == nil {
+		t.Fatal("should have sent dispatch_reply event")
+	}
+	if dispatchReply["status"] != "pass" {
+		t.Errorf("dispatch_reply status = %v, want pass", dispatchReply["status"])
+	}
+}
+
+func TestClient_DispatchReply_Error(t *testing.T) {
+	mock, _, wsURL := setupMockServerWithCapabilities(t)
+
+	client, _ := NewClient(Config{
+		NodeURL:  wsURL,
+		APIKey:   "test-key",
+		AgentDID: "did:web:alice",
+	}, discardErrors)
+	client.Handle("https://layr8.io/protocols/echo/1.0/request",
+		func(msg *Message) (*Message, error) {
+			return nil, fmt.Errorf("database unavailable")
+		},
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client.Connect(ctx)
+	defer client.Close()
+
+	inbound, _ := json.Marshal(map[string]interface{}{
+		"plaintext": map[string]interface{}{
+			"id":   "req-1",
+			"type": "https://layr8.io/protocols/echo/1.0/request",
+			"from": "did:web:bob",
+			"to":   []string{"did:web:alice"},
+			"body": map[string]string{"message": "ping"},
+		},
+	})
+	mock.sendToClient(phoenixMessage{
+		Topic:   "plugins:did:web:alice",
+		Event:   "message",
+		Payload: inbound,
+	})
+
+	time.Sleep(500 * time.Millisecond)
+	received := mock.getReceived()
+
+	var dispatchReply map[string]interface{}
+	for _, msg := range received {
+		if msg.Event == "dispatch_reply" {
+			json.Unmarshal(msg.Payload, &dispatchReply)
+			break
+		}
+	}
+	if dispatchReply == nil {
+		t.Fatal("should have sent dispatch_reply event")
+	}
+	if dispatchReply["status"] != "error" {
+		t.Errorf("dispatch_reply status = %v, want error", dispatchReply["status"])
+	}
+	if dispatchReply["code"] != "database unavailable" {
+		t.Errorf("dispatch_reply code = %v, want 'database unavailable'", dispatchReply["code"])
+	}
+}
+
+func TestClient_DispatchReply_NoHandler_AutoPass(t *testing.T) {
+	mock, _, wsURL := setupMockServerWithCapabilities(t)
+
+	errCh := make(chan SDKError, 1)
+	client, _ := NewClient(Config{
+		NodeURL:  wsURL,
+		APIKey:   "test-key",
+		AgentDID: "did:web:alice",
+	}, func(e SDKError) { errCh <- e })
+
+	// Register handler for echo, but NOT for basicmessage
+	client.Handle("https://layr8.io/protocols/echo/1.0/request",
+		func(msg *Message) (*Message, error) { return nil, nil },
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client.Connect(ctx)
+	defer client.Close()
+
+	inbound, _ := json.Marshal(map[string]interface{}{
+		"plaintext": map[string]interface{}{
+			"id":   "msg-1",
+			"type": "https://didcomm.org/basicmessage/2.0/message",
+			"from": "did:web:bob",
+			"to":   []string{"did:web:alice"},
+			"body": map[string]string{"content": "hello"},
+		},
+	})
+	mock.sendToClient(phoenixMessage{
+		Topic:   "plugins:did:web:alice",
+		Event:   "message",
+		Payload: inbound,
+	})
+
+	time.Sleep(500 * time.Millisecond)
+	received := mock.getReceived()
+
+	var dispatchReply map[string]interface{}
+	for _, msg := range received {
+		if msg.Event == "dispatch_reply" {
+			json.Unmarshal(msg.Payload, &dispatchReply)
+			break
+		}
+	}
+	if dispatchReply == nil {
+		t.Fatal("should have sent dispatch_reply with pass status for unhandled message")
+	}
+	if dispatchReply["status"] != "pass" {
+		t.Errorf("dispatch_reply status = %v, want pass", dispatchReply["status"])
+	}
+}
+
+func TestClient_DispatchReply_NoAckInNewMode(t *testing.T) {
+	mock, _, wsURL := setupMockServerWithCapabilities(t)
+
+	client, _ := NewClient(Config{
+		NodeURL:  wsURL,
+		APIKey:   "test-key",
+		AgentDID: "did:web:alice",
+	}, discardErrors)
+	client.Handle("https://layr8.io/protocols/echo/1.0/request",
+		func(msg *Message) (*Message, error) { return nil, nil },
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client.Connect(ctx)
+	defer client.Close()
+
+	inbound, _ := json.Marshal(map[string]interface{}{
+		"plaintext": map[string]interface{}{
+			"id":   "req-1",
+			"type": "https://layr8.io/protocols/echo/1.0/request",
+			"from": "did:web:bob",
+			"to":   []string{"did:web:alice"},
+			"body": map[string]string{"message": "ping"},
+		},
+	})
+	mock.sendToClient(phoenixMessage{
+		Topic:   "plugins:did:web:alice",
+		Event:   "message",
+		Payload: inbound,
+	})
+
+	time.Sleep(500 * time.Millisecond)
+	received := mock.getReceived()
+
+	for _, msg := range received {
+		if msg.Event == "ack" {
+			t.Error("should not send ack in new reply protocol mode")
+		}
+	}
+}
+
+func TestClient_HandleAll_DispatchReply(t *testing.T) {
+	mock, _, wsURL := setupMockServerWithCapabilities(t)
+
+	handlerCalled := make(chan string, 1)
+	client, _ := NewClient(Config{
+		NodeURL:  wsURL,
+		APIKey:   "test-key",
+		AgentDID: "did:web:alice",
+	}, discardErrors)
+	client.HandleAll(func(msg *Message) (*Message, error) {
+		handlerCalled <- msg.Type
+		return nil, nil
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client.Connect(ctx)
+	defer client.Close()
+
+	inbound, _ := json.Marshal(map[string]interface{}{
+		"plaintext": map[string]interface{}{
+			"id":   "msg-1",
+			"type": "https://example.com/protocols/custom/1.0/action",
+			"from": "did:web:bob",
+			"to":   []string{"did:web:alice"},
+			"body": map[string]string{},
+		},
+	})
+	mock.sendToClient(phoenixMessage{
+		Topic:   "plugins:did:web:alice",
+		Event:   "message",
+		Payload: inbound,
+	})
+
+	select {
+	case msgType := <-handlerCalled:
+		if msgType != "https://example.com/protocols/custom/1.0/action" {
+			t.Errorf("handler received type %q, want custom action", msgType)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for catch-all handler")
+	}
+
+	time.Sleep(200 * time.Millisecond)
+	received := mock.getReceived()
+
+	var dispatchReply map[string]interface{}
+	for _, msg := range received {
+		if msg.Event == "dispatch_reply" {
+			json.Unmarshal(msg.Payload, &dispatchReply)
+			break
+		}
+	}
+	if dispatchReply == nil {
+		t.Fatal("should have sent dispatch_reply for catch-all handler")
+	}
+	if dispatchReply["status"] != "handled" {
+		t.Errorf("dispatch_reply status = %v, want handled", dispatchReply["status"])
 	}
 }

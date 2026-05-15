@@ -70,6 +70,18 @@ func TestSentinelErrors(t *testing.T) {
 	if !errors.Is(ErrClientClosed, ErrClientClosed) {
 		t.Error("ErrClientClosed should match itself")
 	}
+	if !errors.Is(ErrPass, ErrPass) {
+		t.Error("ErrPass should match itself")
+	}
+}
+
+func TestErrPass_IsDistinct(t *testing.T) {
+	if errors.Is(ErrPass, ErrNotConnected) {
+		t.Error("ErrPass should not match ErrNotConnected")
+	}
+	if ErrPass.Error() != "pass" {
+		t.Errorf("ErrPass.Error() = %q, want %q", ErrPass.Error(), "pass")
+	}
 }
 
 func TestSDKError_Error(t *testing.T) {

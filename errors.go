@@ -15,6 +15,10 @@ var (
 	ErrClientClosed     = errors.New("client is closed")
 )
 
+// ErrPass is returned by a handler to signal that it does not handle
+// this message. The cloud-node will try the next matching handler.
+var ErrPass = errors.New("pass")
+
 // ProblemReportError represents a DIDComm problem report received from a remote agent.
 // See: https://identity.foundation/didcomm-messaging/spec/#problem-reports
 type ProblemReportError struct {

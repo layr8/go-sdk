@@ -146,7 +146,8 @@ type phoenixChannel struct {
 	disconnectFn func(error)
 	reconnectFn  func()
 
-	assignedDIDVal string
+	assignedDIDVal    string
+	replyProtocolMode bool // true if server supports reply_protocol/1
 
 	done chan struct{}
 
@@ -270,7 +271,8 @@ func (c *phoenixChannel) join(ctx context.Context, protocols []string) error {
 	}
 
 	joinParams := map[string]interface{}{
-		"payload_types": protocols,
+		"payload_types":  protocols,
+		"reply_protocol": true,
 		"did_spec": map[string]interface{}{
 			"mode":    "Create",
 			"storage": storage,
@@ -309,8 +311,9 @@ func (c *phoenixChannel) join(ctx context.Context, protocols []string) error {
 		var reply struct {
 			Status   string `json:"status"`
 			Response struct {
-				DID    string `json:"did"`
-				Reason string `json:"reason"`
+				DID          string   `json:"did"`
+				Reason       string   `json:"reason"`
+				Capabilities []string `json:"capabilities"`
 			} `json:"response"`
 		}
 		json.Unmarshal(payload, &reply)
@@ -324,6 +327,7 @@ func (c *phoenixChannel) join(ctx context.Context, protocols []string) error {
 		if reply.Response.DID != "" {
 			c.assignedDIDVal = reply.Response.DID
 		}
+		c.replyProtocolMode = hasCapability(reply.Response.Capabilities, "reply_protocol/1")
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
@@ -386,6 +390,10 @@ func (c *phoenixChannel) onReconnect(fn func()) {
 
 func (c *phoenixChannel) assignedDID() string {
 	return c.assignedDIDVal
+}
+
+func (c *phoenixChannel) replyMode() bool {
+	return c.replyProtocolMode
 }
 
 func (c *phoenixChannel) close() error {
@@ -674,6 +682,16 @@ func (c *phoenixChannel) writeMsg(msg phoenixMessage) error {
 	// Bound the time a stuck TCP write buffer can hold the mutex.
 	c.conn.SetWriteDeadline(time.Now().Add(c.writeWait))
 	return c.conn.WriteMessage(websocket.TextMessage, data)
+}
+
+// hasCapability checks if a capability string is present in the list.
+func hasCapability(caps []string, name string) bool {
+	for _, c := range caps {
+		if c == name {
+			return true
+		}
+	}
+	return false
 }
 
 // isLocalhost returns true if host is "localhost" or a subdomain of it.

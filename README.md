@@ -2,6 +2,8 @@
 
 The official Go SDK for building agents on the [Layr8](https://layr8.com) platform. Agents connect to Layr8 cloud-nodes via WebSocket and exchange [DIDComm v2](https://identity.foundation/didcomm-messaging/spec/) messages with other agents across the network.
 
+Full documentation at [docs.layr8.io/build/go-sdk](https://docs.layr8.io/build/go-sdk).
+
 ## Installation
 
 ```bash
@@ -34,7 +36,6 @@ func main() {
         log.Fatal(err)
     }
 
-    // Handle incoming messages
     client.Handle("https://layr8.io/protocols/echo/1.0/request",
         func(msg *layr8.Message) (*layr8.Message, error) {
             var body struct{ Message string `json:"message"` }
@@ -59,139 +60,16 @@ func main() {
 
 ## Core Concepts
 
-### Client
+### Config
 
-The `Client` is the main entry point. It manages the WebSocket connection to a cloud-node, routes inbound messages to handlers, and provides methods for sending outbound messages.
+Configuration can be set explicitly or via environment variables (used as fallbacks when the field is empty).
 
-```go
-client, err := layr8.NewClient(layr8.Config{...}, layr8.LogErrors(log.Default()))
-
-// Register handlers before connecting
-client.Handle(messageType, handlerFunc)
-
-// Connect to the cloud-node
-client.Connect(ctx)
-defer client.Close()
-```
-
-### Messages
-
-`Message` represents a DIDComm v2 message with standard fields:
-
-```go
-type Message struct {
-    ID             string          // unique message ID (auto-generated if empty)
-    Type           string          // DIDComm message type URI
-    From           string          // sender DID (auto-filled from client)
-    To             []string        // recipient DIDs
-    ThreadID       string          // thread correlation ID
-    ParentThreadID string          // parent thread for nested conversations
-    Body           any             // message payload (serialized to JSON)
-    Context        *MessageContext // cloud-node metadata (inbound only)
-    Attachments    []Attachment    // DIDComm v2 attachments (spec §5)
-}
-```
-
-Decode the body of an inbound message with `UnmarshalBody`:
-
-```go
-var req MyRequest
-if err := msg.UnmarshalBody(&req); err != nil {
-    return nil, err // sends a DIDComm problem report to the sender
-}
-```
-
-### Handlers
-
-Handlers process inbound messages. Register them with `client.Handle()` before calling `Connect()`.
-
-A handler receives a `*Message` and returns:
-
-| Return value | Behavior |
-|---|---|
-| `(&Message{...}, nil)` | Sends response to the sender. `From`, `To`, and `ThreadID` are auto-filled. |
-| `(nil, nil)` | Fire-and-forget — no response sent. |
-| `(nil, error)` | Sends a DIDComm [problem report](https://identity.foundation/didcomm-messaging/spec/#problem-reports) to the sender. |
-
-```go
-client.Handle("https://layr8.io/protocols/echo/1.0/request",
-    func(msg *layr8.Message) (*layr8.Message, error) {
-        var req EchoRequest
-        if err := msg.UnmarshalBody(&req); err != nil {
-            return nil, err
-        }
-
-        return &layr8.Message{
-            Type: "https://layr8.io/protocols/echo/1.0/response",
-            Body: EchoResponse{Echo: req.Message},
-        }, nil
-    },
-)
-```
-
-#### Protocol Registration
-
-The SDK automatically derives protocol base URIs from your handler message types and registers them with the cloud-node on connect. For example, handling `https://layr8.io/protocols/echo/1.0/request` registers the protocol `https://layr8.io/protocols/echo/1.0`.
-
-## Sending Messages
-
-### Send
-
-Send a one-way message. By default, `Send` waits for the server to acknowledge the message and returns an error if the server rejects it (e.g., authorization failure):
-
-```go
-err := client.Send(ctx, &layr8.Message{
-    Type: "https://didcomm.org/basicmessage/2.0/message",
-    To:   []string{"did:web:other-org:their-agent"},
-    Body: ChatMessage{Content: "hello!"},
-})
-```
-
-For fire-and-forget behavior (no server ack), use `WithFireAndForget()`:
-
-```go
-err := client.Send(ctx, msg, layr8.WithFireAndForget())
-```
-
-### Request (Request/Response)
-
-Send a message and block until a correlated response arrives:
-
-```go
-resp, err := client.Request(ctx, &layr8.Message{
-    Type: "https://layr8.io/protocols/echo/1.0/request",
-    To:   []string{"did:web:other-org:echo-agent"},
-    Body: EchoRequest{Message: "ping"},
-})
-if err != nil {
-    log.Fatal(err)
-}
-
-var result EchoResponse
-resp.UnmarshalBody(&result)
-fmt.Println(result.Echo) // "ping"
-```
-
-Thread correlation is automatic — the SDK generates a `ThreadID`, attaches it to the outbound message, and matches the inbound response by the same `ThreadID`.
-
-#### Request Options
-
-```go
-// Set parent thread ID for nested conversations
-resp, err := client.Request(ctx, msg, layr8.WithParentThread("parent-thread-id"))
-```
-
-## Configuration
-
-Configuration can be set explicitly or via environment variables. Environment variables are used as fallbacks when the corresponding `Config` field is empty.
-
-| Field | Environment Variable | Required | Description |
+| Field | Env Variable | Required | Description |
 |---|---|---|---|
 | `NodeURL` | `LAYR8_NODE_URL` | Yes | WebSocket URL of the cloud-node |
 | `APIKey` | `LAYR8_API_KEY` | Yes | API key for authentication |
-| `AgentDID` | `LAYR8_AGENT_DID` | No | Agent DID identity |
-
-If `AgentDID` is not provided, the cloud-node creates an ephemeral DID on connect. Retrieve it with `client.DID()`.
+| `AgentDID` | `LAYR8_AGENT_DID` | No | Agent DID identity (ephemeral if omitted) |
+| `Persistent` | -- | No | Persist DID keys across node restarts |
 
 ```go
 // Explicit configuration
@@ -201,105 +79,171 @@ client, err := layr8.NewClient(layr8.Config{
     AgentDID: "did:web:myorg:my-agent",
 }, layr8.LogErrors(log.Default()))
 
-// Environment-only configuration
-// Set LAYR8_NODE_URL, LAYR8_API_KEY, LAYR8_AGENT_DID
+// Environment-only configuration (set LAYR8_NODE_URL, LAYR8_API_KEY)
 client, err := layr8.NewClient(layr8.Config{}, layr8.LogErrors(log.Default()))
 ```
 
-## Handler Options
+### Handlers
 
-### Manual Acknowledgment
+Register handlers with `client.Handle()` before calling `Connect()`. The SDK auto-derives protocol base URIs from message types and registers them with the cloud-node.
 
-By default, messages are acknowledged to the cloud-node before the handler runs (auto-ack). For handlers where you need guaranteed processing, use manual ack to acknowledge only after successful execution. Unacknowledged messages are redelivered by the cloud-node.
+A handler receives a `*Message` and returns:
+
+| Return value | Behavior |
+|---|---|
+| `(&Message{...}, nil)` | Sends response to sender. `From`, `To`, `ThreadID` auto-filled. |
+| `(nil, nil)` | No response sent. |
+| `(nil, ErrPass)` | Declines the message. Cloud-node tries the next matching handler. |
+| `(nil, error)` | Sends a DIDComm [problem report](https://identity.foundation/didcomm-messaging/spec/#problem-reports) to the sender. |
+
+### Wildcard Handler
+
+Use `HandleAll` to catch any message type not matched by a specific `Handle()` call:
 
 ```go
-client.Handle(queryType,
-    func(msg *layr8.Message) (*layr8.Message, error) {
-        result, err := executeQuery(msg)
-        if err != nil {
-            return nil, err // message NOT acked — will be redelivered
-        }
+client.HandleAll(func(msg *layr8.Message) (*layr8.Message, error) {
+    log.Printf("received %s from %s", msg.Type, msg.From)
+    return nil, nil
+})
+```
 
-        msg.Ack() // explicitly acknowledge after success
-        return &layr8.Message{Type: resultType, Body: result}, nil
+Dispatch priority: specific handler > catch-all > auto-pass to cloud-node.
+
+### Send
+
+Send a one-way message. By default waits for server acknowledgment:
+
+```go
+err := client.Send(ctx, &layr8.Message{
+    Type: "https://didcomm.org/basicmessage/2.0/message",
+    To:   []string{"did:web:other-org:their-agent"},
+    Body: ChatMessage{Content: "hello!"},
+})
+```
+
+Use `WithFireAndForget()` to skip the server ack:
+
+```go
+err := client.Send(ctx, msg, layr8.WithFireAndForget())
+```
+
+### Request
+
+Send a message and block until a correlated response arrives:
+
+```go
+resp, err := client.Request(ctx, &layr8.Message{
+    Type: "https://layr8.io/protocols/echo/1.0/request",
+    To:   []string{"did:web:other-org:echo-agent"},
+    Body: EchoRequest{Message: "ping"},
+})
+
+var result EchoResponse
+resp.UnmarshalBody(&result)
+```
+
+Thread correlation is automatic. Use `WithParentThread(pthid)` for nested conversations.
+
+### Messages
+
+`Message` represents a DIDComm v2 message:
+
+| Field | Type | Description |
+|---|---|---|
+| `ID` | `string` | Unique message ID (auto-generated if empty) |
+| `Type` | `string` | DIDComm message type URI |
+| `From` | `string` | Sender DID (auto-filled from client) |
+| `To` | `[]string` | Recipient DIDs |
+| `ThreadID` | `string` | Thread correlation ID |
+| `ParentThreadID` | `string` | Parent thread for nested conversations |
+| `Body` | `any` | Message payload (serialized to JSON) |
+| `Context` | `*MessageContext` | Cloud-node metadata (inbound only) |
+| `Attachments` | `[]Attachment` | DIDComm v2 attachments |
+
+Decode inbound message bodies with `msg.UnmarshalBody(&target)`. Inbound `Context` includes `Recipient` (string), `Authorized` (bool), and `SenderCredentials` (`[]SenderCredential`).
+
+## Durable Handlers
+
+Use `WithManualAck()` to acknowledge messages only after successful processing. Unacknowledged messages are redelivered by the cloud-node.
+
+```go
+client.Handle("https://layr8.io/protocols/order/1.0/created",
+    func(msg *layr8.Message) (*layr8.Message, error) {
+        if err := persistToDB(msg); err != nil {
+            return nil, err // NOT acked -- cloud-node will redeliver
+        }
+        msg.Ack()
+        return nil, nil
     },
     layr8.WithManualAck(),
 )
 ```
 
-## Connection Lifecycle
+## W3C Verifiable Credentials
 
-### DID Assignment
-
-If no `AgentDID` is configured, the cloud-node assigns an ephemeral DID on connect:
+Sign, verify, store, list, and retrieve [W3C Verifiable Credentials](https://www.w3.org/TR/vc-data-model-2.0/) via the cloud-node's REST API.
 
 ```go
-client, _ := layr8.NewClient(layr8.Config{
-    NodeURL: "ws://localhost:4000/plugin_socket/websocket",
-    APIKey:  "my-key",
-}, layr8.LogErrors(log.Default()))
-client.Connect(ctx)
+// Sign
+cred := layr8.Credential{
+    Context:           []string{"https://www.w3.org/ns/credentials/v2"},
+    Type:              []string{"VerifiableCredential"},
+    Issuer:            client.DID(),
+    CredentialSubject: map[string]any{"id": holderDID, "name": "Alice"},
+}
+signedJWT, err := client.SignCredential(ctx, cred)
 
-fmt.Println(client.DID()) // "did:web:myorg:abc123" (assigned by node)
+// Verify
+verified, err := client.VerifyCredential(ctx, signedJWT)
+
+// Store, List, Get
+stored, err := client.StoreCredential(ctx, signedJWT)
+creds, err := client.ListCredentials(ctx)
+fetched, err := client.GetCredential(ctx, stored.ID)
 ```
 
-### Connection Resilience
+Sign options: `WithIssuerDID(did)`, `WithCredentialFormat(format)`. Verify options: `WithVerifierDID(did)`. Store options: `WithHolderDID(did)`, `WithStoreMeta(issuerDID, validUntil)`. List options: `WithListHolderDID(did)`. Formats: `FormatCompactJWT` (default), `FormatJSON`, `FormatJWT`, `FormatEnveloped`.
 
-The SDK automatically reconnects when the WebSocket connection drops (e.g., node restart, network interruption). Reconnection uses exponential backoff starting at 1 second, capped at 30 seconds.
+## W3C Verifiable Presentations
 
-During reconnection:
-- `Send()`, `Request()`, and other operations return `ErrNotConnected` immediately — the SDK does not queue messages
-- The `OnDisconnect` callback fires when the connection drops
-- The `OnReconnect` callback fires when the connection is restored
-- `Close()` stops the reconnect loop
+Wrap signed credentials into a holder-signed presentation envelope.
+
+```go
+// Sign
+signedPres, err := client.SignPresentation(ctx, []string{signedJWT},
+    layr8.WithNonce("challenge-from-verifier"),
+)
+
+// Verify
+verified, err := client.VerifyPresentation(ctx, signedPres)
+```
+
+Sign options: `WithPresentationHolderDID(did)`, `WithPresentationFormat(format)`, `WithNonce(nonce)`. Verify options: `WithPresentationVerifierDID(did)`.
+
+## Connection Lifecycle
+
+**DID assignment:** If no `AgentDID` is configured, the cloud-node assigns an ephemeral DID on connect. Retrieve it with `client.DID()`. Set `Persistent: true` to persist DID keys across node restarts.
+
+**Reconnection:** The SDK automatically reconnects with exponential backoff (1s to 30s) when the connection drops. During reconnection, `Send()` and `Request()` return `ErrNotConnected`.
 
 ```go
 client.OnDisconnect(func(err error) {
     log.Printf("disconnected: %v", err)
 })
-
 client.OnReconnect(func() {
     log.Println("reconnected")
 })
 ```
 
-## Message Context
-
-Inbound messages include a `Context` field with metadata from the cloud-node:
-
-```go
-client.Handle(messageType, func(msg *layr8.Message) (*layr8.Message, error) {
-    if msg.Context != nil {
-        fmt.Println("Recipient:", msg.Context.Recipient)
-        fmt.Println("Authorized:", msg.Context.Authorized)
-
-        for _, cred := range msg.Context.SenderCredentials {
-            fmt.Printf("Sender credential: %s (%s)\n", cred.Name, cred.ID)
-        }
-    }
-    return nil, nil
-})
-```
-
-| Field | Type | Description |
-|---|---|---|
-| `Recipient` | `string` | The DID that received this message |
-| `Authorized` | `bool` | Whether the sender is authorized by the node's policy |
-| `SenderCredentials` | `[]Credential` | Verifiable credentials presented by the sender |
-
 ## Error Handling
 
-### ErrorHandler (Required)
-
-`NewClient` requires an `ErrorHandler` as its second argument. This callback is invoked for SDK-level errors that cannot be returned to a direct caller — unparseable messages, missing handlers, handler panics, server rejections, and transport write failures.
+`NewClient` requires an `ErrorHandler` for SDK-level errors (parse failures, missing handlers, panics, server rejections, transport errors):
 
 ```go
+// Built-in logger
 client, err := layr8.NewClient(cfg, layr8.LogErrors(log.Default()))
-```
 
-`LogErrors` is a built-in helper that logs all errors via a standard `log.Logger`. For custom handling:
-
-```go
+// Custom handler
 client, err := layr8.NewClient(cfg, func(e layr8.SDKError) {
     slog.Error("sdk error", "kind", e.Kind, "error", e.Cause)
 })
@@ -307,221 +251,58 @@ client, err := layr8.NewClient(cfg, func(e layr8.SDKError) {
 
 Error kinds: `ErrParseFailure`, `ErrNoHandler`, `ErrHandlerPanic`, `ErrServerReject`, `ErrTransportWrite`.
 
-### Problem Reports
+**Problem reports:** Handler errors automatically send DIDComm problem reports. `Request()` returns `*ProblemReportError` when the remote agent reports an error.
 
-When a handler returns an error, the SDK automatically sends a [DIDComm problem report](https://identity.foundation/didcomm-messaging/spec/#problem-reports) to the sender:
+**Sentinel errors:** `ErrNotConnected`, `ErrAlreadyConnected`, `ErrClientClosed`.
 
-```go
-client.Handle(msgType, func(msg *layr8.Message) (*layr8.Message, error) {
-    return nil, fmt.Errorf("something went wrong") // sends problem report
-})
-```
-
-When `Request()` receives a problem report as the response, it returns a `*ProblemReportError`:
-
-```go
-resp, err := client.Request(ctx, msg)
-if err != nil {
-    var prob *layr8.ProblemReportError
-    if errors.As(err, &prob) {
-        fmt.Printf("Remote error [%s]: %s\n", prob.Code, prob.Comment)
-    }
-}
-```
-
-### Connection Errors
-
-Connection failures return a `*ConnectionError`:
-
-```go
-err := client.Connect(ctx)
-if err != nil {
-    var connErr *layr8.ConnectionError
-    if errors.As(err, &connErr) {
-        fmt.Printf("Failed to connect to %s: %s\n", connErr.URL, connErr.Reason)
-    }
-}
-```
-
-### Sentinel Errors
-
-| Error | Description |
-|---|---|
-| `ErrNotConnected` | Operation attempted before `Connect()` or after `Close()` |
-| `ErrAlreadyConnected` | `Connect()` called on an already-connected client |
-| `ErrClientClosed` | `Connect()` called on a closed client |
-
-## W3C Verifiable Credentials
-
-The SDK provides methods for signing, verifying, storing, listing, and retrieving [W3C Verifiable Credentials](https://www.w3.org/TR/vc-data-model-2.0/). These operations use the cloud-node's REST API and the DID keys in the node's wallet.
-
-### Sign a Credential
-
-```go
-cred := layr8.Credential{
-    Context:           []string{"https://www.w3.org/ns/credentials/v2"},
-    ID:                "urn:uuid:my-credential",
-    Type:              []string{"VerifiableCredential"},
-    Issuer:            client.DID(),
-    CredentialSubject: map[string]any{"id": "did:web:example:holder", "name": "Alice"},
-}
-
-signedJWT, err := client.SignCredential(ctx, cred)
-```
-
-Options: `WithIssuerDID(did)`, `WithCredentialFormat(format)`.
-
-### Verify a Credential
-
-```go
-verified, err := client.VerifyCredential(ctx, signedJWT)
-fmt.Println(verified.Credential) // decoded credential claims
-fmt.Println(verified.Headers)    // JWT headers (alg, kid, etc.)
-```
-
-Options: `WithVerifierDID(did)`.
-
-> **Note:** The verifier DID must have keys in the local node's wallet. Cross-node verification is not currently supported.
-
-### Store, List, Get
-
-```go
-// Store a signed credential
-stored, err := client.StoreCredential(ctx, signedJWT)
-fmt.Println(stored.ID) // storage ID
-
-// List all stored credentials
-creds, err := client.ListCredentials(ctx)
-
-// Retrieve by ID
-fetched, err := client.GetCredential(ctx, stored.ID)
-fmt.Println(fetched.CredentialJWT) // the original signed JWT
-```
-
-Store options: `WithHolderDID(did)`, `WithStoreMeta(issuerDID, validUntil)`.
-List options: `WithListHolderDID(did)`.
-
-### Output Formats
-
-`WithCredentialFormat()` accepts: `FormatCompactJWT` (default), `FormatJSON`, `FormatJWT`, `FormatEnveloped`.
-
-## W3C Verifiable Presentations
-
-Presentations wrap one or more signed credentials into a holder-signed envelope.
-
-### Sign a Presentation
-
-```go
-signedPres, err := client.SignPresentation(ctx, []string{signedJWT},
-    layr8.WithNonce("challenge-from-verifier"),
-)
-```
-
-Options: `WithPresentationHolderDID(did)`, `WithPresentationFormat(format)`, `WithNonce(nonce)`.
-
-### Verify a Presentation
-
-```go
-verified, err := client.VerifyPresentation(ctx, signedPres)
-fmt.Println(verified.Presentation) // decoded presentation claims
-fmt.Println(verified.Headers)      // JWT headers
-```
-
-Options: `WithPresentationVerifierDID(did)`.
+**Connection errors:** `Connect()` returns `*ConnectionError` on failure. REST API calls return `*RESTError`.
 
 ## Examples
 
-The [examples/](examples/) directory contains complete, runnable agents:
+The [examples/](examples/) directory contains runnable agents:
 
-### Echo Agent
-
-A minimal agent that echoes back any message it receives. Demonstrates request/response handlers with auto-ack and auto-thread correlation.
+| Example | Description |
+|---|---|
+| [echo-agent](examples/echo-agent) | Request/response echo service with auto-ack and ping loop |
+| [chat](examples/chat) | Interactive DIDComm basic messaging client |
+| [http-agent](examples/http-agent) | DIDComm-to-HTTP proxy agent |
+| [postgres-agent](examples/postgres-agent) | SQL query agent with manual ack |
+| [durable-handler](examples/durable-handler) | Persist-then-ack pattern with JSON-lines file |
 
 ```bash
 LAYR8_API_KEY=your-key go run ./examples/echo-agent
 ```
 
-### Chat Client
-
-An interactive chat client for DIDComm basic messaging. Demonstrates fire-and-forget `Send()`, inbound message handling, `MessageContext` for sender credentials, and multi-recipient messaging.
-
-```bash
-LAYR8_API_KEY=your-key go run ./examples/chat did:web:friend:chat-agent
-```
-
-### HTTP Agent
-
-A DIDComm-to-HTTP proxy agent. Receives DIDComm query requests and forwards them to a backend REST API. Demonstrates request/response patterns with structured protocol types.
-
-```bash
-BACKEND_URL=http://localhost:3000 LAYR8_API_KEY=your-key go run ./examples/http-agent
-```
-
-### Postgres Agent
-
-A database query agent with manual acknowledgment. Receives SQL query requests over DIDComm, executes them against PostgreSQL, and returns results. Demonstrates `WithManualAck()` for guaranteed processing — queries are only acknowledged after successful execution.
-
-```bash
-DATABASE_URL=postgres://localhost/mydb LAYR8_API_KEY=your-key go run ./examples/postgres-agent
-```
-
-### Durable Handler
-
-Persist-then-ack pattern: writes inbound messages to a JSON-lines file before acknowledging. If the process crashes before ack, the cloud-node redelivers. Demonstrates `WithManualAck()` with zero external dependencies.
-
-```bash
-LAYR8_API_KEY=your-key go run ./examples/durable-handler
-```
-
 ## Development
 
-### Prerequisites
-
-- Go 1.25+
-- [golangci-lint](https://golangci-lint.run/) (optional, for linting)
-
-### Makefile Targets
-
 ```bash
-make test             # Run unit tests
-make test-race        # Run tests with race detector
-make test-v           # Run tests with verbose output
-make lint             # Run golangci-lint
-make build            # Build all packages
-make examples         # Build example agents
-make integration-test # Run integration tests against live nodes
-make clean            # Remove build artifacts
+make test        # Run unit tests
+make test-race   # Tests with race detector
+make lint        # Run golangci-lint
+make build       # Build all packages
+make examples    # Build example agents
 ```
 
-### Running Tests
-
-```bash
-make test
-```
-
-### Integration Testing
-
-The integration test suite runs against live Layr8 cloud-nodes. Set up port-forwards first:
-
-```bash
-kubectl port-forward -n cust-alice-test svc/node 14000:4000 &
-kubectl port-forward -n cust-bob-test svc/node 14001:4000 &
-make integration-test
-```
+Requires Go 1.25+ and optionally [golangci-lint](https://golangci-lint.run/).
 
 ## Architecture
 
-The SDK is structured around a small set of types:
-
 ```
-Client          → public API (Connect, Send, Request, Handle, Close)
-  ├── Config    → configuration with env var fallback
-  ├── Message   → DIDComm v2 message envelope
-  ├── Handler   → message type → handler function registry
-  └── Transport → WebSocket/Phoenix Channel (pluggable interface)
+Client          -> public API (Connect, Send, Request, Handle, Close)
+  |-- Config    -> configuration with env var fallback
+  |-- Message   -> DIDComm v2 message envelope
+  |-- Handler   -> message type -> handler function registry
+  \-- Transport -> WebSocket/Phoenix Channel (pluggable interface)
 ```
 
-The transport layer implements the Phoenix Channel V2 wire protocol over WebSocket, including join negotiation, heartbeats, and message acknowledgment. The transport interface is designed to be pluggable for future protocols (e.g., QUIC).
+The transport layer implements Phoenix Channel V2 over WebSocket with join negotiation, heartbeats, acknowledgment, and automatic reconnection. Credentials and presentations use the cloud-node's REST API.
+
+## Links
+
+- [Layr8 Documentation](https://docs.layr8.io)
+- [Go SDK Guide](https://docs.layr8.io/build/go-sdk)
+- [DIDComm v2 Specification](https://identity.foundation/didcomm-messaging/spec/)
+- [W3C Verifiable Credentials](https://www.w3.org/TR/vc-data-model-2.0/)
 
 ## License
 

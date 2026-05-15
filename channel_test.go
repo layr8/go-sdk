@@ -214,6 +214,110 @@ func TestPhoenixChannel_JoinParams_PersistentWhenSet(t *testing.T) {
 	}
 }
 
+func TestPhoenixChannel_JoinParams_ReplyProtocol(t *testing.T) {
+	mock := newMockServer()
+	mock.onMsg = func(msg phoenixMessage) {
+		if msg.Event == "phx_join" {
+			mock.sendToClient(phoenixMessage{
+				JoinRef: msg.Ref,
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"ok","response":{"capabilities":["reply_protocol/1","wildcard/1"]}}`),
+			})
+		}
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(mock.handler))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/plugin_socket/websocket"
+	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test", false, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := ch.connect(ctx, []string{"https://layr8.io/protocols/echo/1.0"})
+	if err != nil {
+		t.Fatalf("connect() error: %v", err)
+	}
+	defer ch.close()
+
+	// Verify reply_protocol: true was sent in join params
+	received := mock.getReceived()
+	joinMsg := received[0]
+	var payload map[string]interface{}
+	json.Unmarshal(joinMsg.Payload, &payload)
+	rp, ok := payload["reply_protocol"]
+	if !ok {
+		t.Fatal("join payload should contain reply_protocol")
+	}
+	if rp != true {
+		t.Errorf("reply_protocol = %v, want true", rp)
+	}
+}
+
+func TestPhoenixChannel_Capabilities_ReplyProtocol(t *testing.T) {
+	mock := newMockServer()
+	mock.onMsg = func(msg phoenixMessage) {
+		if msg.Event == "phx_join" {
+			mock.sendToClient(phoenixMessage{
+				JoinRef: msg.Ref,
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"ok","response":{"capabilities":["reply_protocol/1","wildcard/1"]}}`),
+			})
+		}
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(mock.handler))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/plugin_socket/websocket"
+	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test", false, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ch.connect(ctx, []string{})
+	defer ch.close()
+
+	if !ch.replyMode() {
+		t.Error("replyMode() should be true when server advertises reply_protocol/1")
+	}
+}
+
+func TestPhoenixChannel_Capabilities_LegacyServer(t *testing.T) {
+	mock := newMockServer()
+	mock.onMsg = func(msg phoenixMessage) {
+		if msg.Event == "phx_join" {
+			// Old server: no capabilities in response
+			mock.sendToClient(phoenixMessage{
+				JoinRef: msg.Ref,
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"ok","response":{"did":"did:web:node:test"}}`),
+			})
+		}
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(mock.handler))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/plugin_socket/websocket"
+	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test", false, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ch.connect(ctx, []string{})
+	defer ch.close()
+
+	if ch.replyMode() {
+		t.Error("replyMode() should be false when server doesn't advertise capabilities")
+	}
+}
+
 func TestPhoenixChannel_Send(t *testing.T) {
 	mock := newMockServer()
 	mock.onMsg = func(msg phoenixMessage) {
