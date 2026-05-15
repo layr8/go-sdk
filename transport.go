@@ -40,4 +40,8 @@ type transport interface {
 
 	// assignedDID returns the DID assigned by the cloud-node on join (for ephemeral DIDs).
 	assignedDID() string
+
+	// replyMode returns true if the server supports the reply protocol.
+	// When true, the client sends dispatch_reply events instead of acks.
+	replyMode() bool
 }
