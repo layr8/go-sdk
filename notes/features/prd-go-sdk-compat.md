@@ -179,12 +179,34 @@ jobs:
           docker push ghcr.io/layr8/go-sdk/compat:$VERSION
 
   compat-gate:
-    needs: publish-compat-image
-    uses: layr8/compat-suite/.github/workflows/gate.yml@main
-    with:
-      sdk: go
-      version: ${{ needs.build.outputs.version }}
+    needs: [publish-compat-image, validate-version]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger compat-suite gate
+        run: |
+          gh api repos/layr8/compat-suite/dispatches \
+            -f event_type=gate \
+            -f "client_payload[sdk]=go" \
+            -f "client_payload[version]=${{ needs.validate-version.outputs.version }}"
+        env:
+          GH_TOKEN: ${{ secrets.COMPAT_GATE_PAT }}
 ```
+
+### Compat-Suite Trigger
+
+The `compat-gate` job fires a `repository_dispatch` event (type `gate`)
+to `layr8/compat-suite`. This triggers the gate workflow which pulls
+the freshly-published compat image and runs the cross-language matrix.
+
+**Required secret**: `COMPAT_GATE_PAT` — a PAT (or fine-grained token)
+with `repo` scope on `layr8/compat-suite`. Same token used by all SDK
+repos.
+
+### GOPROXY Indexing
+
+Go modules are tag-based — no registry upload needed. The
+`index-goproxy` job triggers `proxy.golang.org` to index the new
+version so `go get` works immediately after release.
 
 ## README Update
 
