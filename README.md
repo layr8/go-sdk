@@ -85,7 +85,7 @@ client, err := layr8.NewClient(layr8.Config{}, layr8.LogErrors(log.Default()))
 
 ### Handlers
 
-Register handlers with `client.Handle()` before calling `Connect()`. The SDK auto-derives protocol base URIs from message types and registers them with the cloud-node.
+Register handlers with `client.Handle()` before calling `Connect()`. The SDK auto-derives protocol base URIs from message types and registers them with the cloud-node. The problem report protocol (`https://didcomm.org/report-problem/2.0`) is always included, ensuring at least one protocol is present. The cloud-node requires at least one protocol on join.
 
 A handler receives a `*Message` and returns:
 
