@@ -70,6 +70,7 @@ Configuration can be set explicitly or via environment variables (used as fallba
 | `APIKey` | `LAYR8_API_KEY` | Yes | API key for authentication |
 | `AgentDID` | `LAYR8_AGENT_DID` | No | Agent DID identity (ephemeral if omitted) |
 | `Persistent` | -- | No | Persist DID keys across node restarts |
+| `Protocols` | -- | No | Additional protocol URIs to advertise on join (for sender-only actors) |
 
 ```go
 // Explicit configuration
@@ -284,6 +285,19 @@ make examples    # Build example agents
 ```
 
 Requires Go 1.25+ and optionally [golangci-lint](https://golangci-lint.run/).
+
+## Compat Suite
+
+The `compat/` directory contains integration scenarios that test the SDK against real cloud-nodes. It's a separate Go module.
+
+```bash
+cd compat && go build ./...              # Build scenarios
+cd compat && go run ./cmd/compat/ --list-scenarios  # List available scenarios
+```
+
+Scenarios: `echo`, `pass`, `wildcard`, `disconnected`. See [notes/features/prd-go-sdk-compat.md](notes/features/prd-go-sdk-compat.md) for architecture details.
+
+The CI pipeline builds the compat module on every PR. On release, a Docker image is published to `ghcr.io/layr8/go-sdk/compat:{version}` and the compat-suite orchestrator is triggered.
 
 ## Architecture
 

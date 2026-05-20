@@ -26,3 +26,20 @@ jobs:
 
       - name: Test
         run: go test -count=1 -parallel=4 -v ./...
+
+  compat-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build compat scenarios
+        run: cd compat && go build ./...
+
+      - name: Verify compat CLI
+        run: cd compat && go run ./cmd/compat/ --list-scenarios

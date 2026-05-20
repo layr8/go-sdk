@@ -31,6 +31,11 @@ type Config struct {
 	// Default: false (ephemeral storage).
 	Persistent bool
 
+	// Protocols lists additional protocol URIs to advertise on join.
+	// Use this for sender-only actors that need to declare protocols
+	// without registering handlers. Merged with handler-derived protocols.
+	Protocols []string
+
 	// DialContext, if set, overrides the default TCP dialer for the
 	// WebSocket connection. Use this for custom network transports
 	// (e.g., vsock in Nitro Enclaves).

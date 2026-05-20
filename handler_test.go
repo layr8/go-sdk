@@ -250,3 +250,50 @@ func TestDeriveProtocol(t *testing.T) {
 		}
 	}
 }
+
+func TestHandlerRegistry_PayloadTypesWithExtraProtocols(t *testing.T) {
+	r := newHandlerRegistry()
+	handler := func(msg *Message) (*Message, error) { return nil, nil }
+	r.register("https://layr8.io/protocols/echo/1.0/request", handler)
+
+	extra := []string{"https://layr8.test/custom/1.0"}
+	protocols := r.payloadTypes(extra...)
+
+	has := func(p string) bool {
+		for _, proto := range protocols {
+			if proto == p {
+				return true
+			}
+		}
+		return false
+	}
+
+	if !has("https://didcomm.org/report-problem/2.0") {
+		t.Error("should always include problem-report")
+	}
+	if !has("https://layr8.test/custom/1.0") {
+		t.Error("should include extra protocol")
+	}
+	if !has("https://layr8.io/protocols/echo/1.0") {
+		t.Error("should include handler-derived protocol")
+	}
+}
+
+func TestHandlerRegistry_PayloadTypesDeduplicatesExtras(t *testing.T) {
+	r := newHandlerRegistry()
+	handler := func(msg *Message) (*Message, error) { return nil, nil }
+	r.register("https://layr8.io/protocols/echo/1.0/request", handler)
+
+	extra := []string{"https://layr8.io/protocols/echo/1.0"}
+	protocols := r.payloadTypes(extra...)
+
+	count := 0
+	for _, p := range protocols {
+		if p == "https://layr8.io/protocols/echo/1.0" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("echo/1.0 appears %d times, want 1", count)
+	}
+}

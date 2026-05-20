@@ -98,7 +98,7 @@ func (c *Client) Connect(ctx context.Context) error {
 	}
 	c.mu.Unlock()
 
-	protocols := c.registry.payloadTypes()
+	protocols := c.registry.payloadTypes(c.cfg.Protocols...)
 
 	ch := newPhoenixChannel(c.cfg.NodeURL, c.cfg.APIKey, c.cfg.AgentDID, c.cfg.Persistent, c.cfg.DialContext)
 

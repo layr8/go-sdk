@@ -10,9 +10,25 @@ need to be implemented from scratch.
 ## Goal
 
 Add a `compat/` directory to the Go SDK repo implementing the same
-hexagonal architecture as the node SDK: scenario core logic, Layer 1
-tests (go test + testcontainers), and Layer 2 CLI adapter + Dockerfile.
-CI publishes `ghcr.io/layr8/go-sdk/compat:{version}` on release.
+structure as the sibling SDKs: scenario core logic, Layer 1 tests
+(go test), and Layer 2 CLI adapter + Dockerfile. CI publishes
+`ghcr.io/layr8/go-sdk/compat:{version}` on release.
+
+## Decisions (from grilling session 2026-05-20)
+
+- **Reference implementation**: Python SDK — match its patterns
+- **Module structure**: Separate `go.mod` with `replace` directive for
+  dev/CI, built from local source in Docker (not published module ref)
+- **Scenario context**: Flat struct with NodeURL/APIKey/TestID/Timeout/AgentDID.
+  Scenarios create their own clients. No CreateClient factory.
+- **Ready signal**: `onReady func(did string)` callback, matching all
+  three sibling SDKs
+- **Config.Protocols**: Must be added to Go SDK before compat work —
+  sender-only actors need to declare protocols without registering handlers
+- **Dockerfile**: Always builds from local source (option A). Tagged with
+  release version. No chicken-and-egg version swap.
+- **Terminology**: See CONTEXT.md — Actor (not Agent), Plugin (channel
+  session), Protocol (not PIURI/payload_type)
 
 ## Target Structure
 
