@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/layr8/go-sdk/compat/scenarios"
 )
 
@@ -96,10 +99,11 @@ func main() {
 		}
 		sc := scenarios.SenderContext{
 			ScenarioContext: scenarios.ScenarioContext{
-				NodeURL: *node,
-				APIKey:  *apiKey,
-				TestID:  *testID,
-				Timeout: timeout,
+				NodeURL:  *node,
+				APIKey:   *apiKey,
+				TestID:   *testID,
+				Timeout:  timeout,
+				AgentDID: senderDID(*node),
 			},
 			ReceiverDID: *did,
 		}
@@ -114,6 +118,19 @@ func main() {
 		fmt.Fprintf(os.Stderr, "unknown mode: %s (want receiver or sender)\n", *mode)
 		os.Exit(2)
 	}
+}
+
+// senderDID generates a unique did:web DID from the node URL.
+// The cloud-node rejects empty DIDs in the join topic, so senders
+// must provide one even though they don't register handlers.
+func senderDID(nodeURL string) string {
+	u, err := url.Parse(nodeURL)
+	if err != nil {
+		return fmt.Sprintf("did:web:localhost%%3A9000:compat:sender-%s", uuid.New())
+	}
+	// did:web uses %3A for port separator per the spec.
+	host := strings.Replace(u.Host, ":", "%3A", 1)
+	return fmt.Sprintf("did:web:%s:compat:sender-%s", host, uuid.New())
 }
 
 func envOrDefault(key, fallback string) string {
