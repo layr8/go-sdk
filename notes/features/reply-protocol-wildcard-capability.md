@@ -45,11 +45,13 @@ specific handler > catch-all > auto-pass
 - Ack stays in transport interface for legacy mode
 - In new mode: no ack, send dispatch_reply instead
 
-## Implementation order (TDD cycles)
+## Status
 
-1. ErrPass sentinel
-2. HandleAll + catch-all in registry (+ `"*"` in payload_types)
-3. Capability negotiation (join params + parse reply)
-4. dispatch_reply event (new mode handler dispatch)
-5. Legacy mode fallback (old server without capabilities)
-6. Update existing tests
+Complete. All items implemented:
+
+- [x] ErrPass sentinel
+- [x] HandleAll + catch-all in registry (+ `"*"` in payload_types)
+- [x] Capability negotiation (join params + parse reply)
+- [x] dispatch_reply event (new mode handler dispatch)
+- [x] Legacy mode fallback (old server without capabilities)
+- [x] Update existing tests
