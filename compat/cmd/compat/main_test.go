@@ -6,14 +6,16 @@ import (
 	"testing"
 )
 
-func TestSenderDIDGenerated(t *testing.T) {
+func TestSenderDIDUsesPort9000(t *testing.T) {
 	nodeURL := "ws://node-4-15-0:4040/plugin_socket/websocket"
 	did := senderDID(nodeURL)
 
 	if did == "" {
 		t.Fatal("senderDID returned empty string")
 	}
-	if !strings.HasPrefix(did, "did:web:node-4-15-0%3A4040:compat:sender-") {
+	// DID must use port 9000 (HTTP/DID resolution port), not
+	// 4040 (WebSocket port), so cross-node DID resolution works.
+	if !strings.HasPrefix(did, "did:web:node-4-15-0%3A9000:compat:sender-") {
 		t.Fatalf("unexpected DID format: %s", did)
 	}
 
@@ -29,9 +31,9 @@ func TestSenderDIDHostExtraction(t *testing.T) {
 		nodeURL    string
 		wantPrefix string
 	}{
-		{"ws://alice:4040/plugin_socket/websocket", "did:web:alice%3A4040:compat:sender-"},
-		{"ws://node-4-13-40:4040/path", "did:web:node-4-13-40%3A4040:compat:sender-"},
-		{"wss://prod.example.com:443/ws", "did:web:prod.example.com%3A443:compat:sender-"},
+		{"ws://alice:4040/plugin_socket/websocket", "did:web:alice%3A9000:compat:sender-"},
+		{"ws://node-4-13-40:4040/path", "did:web:node-4-13-40%3A9000:compat:sender-"},
+		{"wss://prod.example.com:443/ws", "did:web:prod.example.com%3A9000:compat:sender-"},
 	}
 
 	for _, tt := range tests {
@@ -45,11 +47,11 @@ func TestSenderDIDHostExtraction(t *testing.T) {
 }
 
 func TestSenderDIDIsValidDIDWeb(t *testing.T) {
-	did := senderDID("ws://myhost:9000/plugin_socket/websocket")
+	did := senderDID("ws://myhost:4040/plugin_socket/websocket")
 
 	// did:web DIDs use %3A for port separator
-	if !strings.Contains(did, "%3A") {
-		t.Fatalf("DID should contain percent-encoded port separator: %s", did)
+	if !strings.Contains(did, "%3A9000") {
+		t.Fatalf("DID should contain %%3A9000 port: %s", did)
 	}
 
 	// Should be parseable — strip did:web: prefix and decode
@@ -59,6 +61,6 @@ func TestSenderDIDIsValidDIDWeb(t *testing.T) {
 		t.Fatalf("DID path should be URL-decodable: %v", err)
 	}
 	if !strings.Contains(decoded, "myhost:9000") {
-		t.Fatalf("decoded DID should contain host:port: %s", decoded)
+		t.Fatalf("decoded DID should contain host:9000: %s", decoded)
 	}
 }

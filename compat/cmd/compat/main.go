@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -123,14 +122,14 @@ func main() {
 // senderDID generates a unique did:web DID from the node URL.
 // The cloud-node rejects empty DIDs in the join topic, so senders
 // must provide one even though they don't register handlers.
+// Uses port 9000 (HTTP/DID-resolution port) regardless of the
+// WebSocket port in the URL, so cross-node DID resolution works.
 func senderDID(nodeURL string) string {
 	u, err := url.Parse(nodeURL)
 	if err != nil {
 		return fmt.Sprintf("did:web:localhost%%3A9000:compat:sender-%s", uuid.New())
 	}
-	// did:web uses %3A for port separator per the spec.
-	host := strings.Replace(u.Host, ":", "%3A", 1)
-	return fmt.Sprintf("did:web:%s:compat:sender-%s", host, uuid.New())
+	return fmt.Sprintf("did:web:%s%%3A9000:compat:sender-%s", u.Hostname(), uuid.New())
 }
 
 func envOrDefault(key, fallback string) string {
