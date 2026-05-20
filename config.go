@@ -24,6 +24,11 @@ type Config struct {
 	// Fallback: LAYR8_AGENT_DID environment variable.
 	AgentDID string
 
+	// Protocols lists additional protocol URIs to advertise on join.
+	// Use this for sender-only actors that need to declare protocols
+	// without registering handlers. Merged with handler-derived protocols.
+	Protocols []string
+
 	// Persistent, when true, tells the cloud-node to persist the DID
 	// and its keys across restarts. Use this for agents that need
 	// stable key material for cross-node DIDComm (e.g., services

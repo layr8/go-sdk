@@ -163,3 +163,32 @@ func TestRestURLFromWebSocket(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveConfig_ProtocolsPassthrough(t *testing.T) {
+	cfg := Config{
+		NodeURL:   "ws://localhost:4000",
+		APIKey:    "test-key",
+		Protocols: []string{"https://layr8.test/echo/1.0"},
+	}
+	resolved, err := resolveConfig(cfg)
+	if err != nil {
+		t.Fatalf("resolveConfig() error: %v", err)
+	}
+	if len(resolved.Protocols) != 1 || resolved.Protocols[0] != "https://layr8.test/echo/1.0" {
+		t.Errorf("Protocols = %v, want [https://layr8.test/echo/1.0]", resolved.Protocols)
+	}
+}
+
+func TestResolveConfig_NilProtocols(t *testing.T) {
+	cfg := Config{
+		NodeURL: "ws://localhost:4000",
+		APIKey:  "test-key",
+	}
+	resolved, err := resolveConfig(cfg)
+	if err != nil {
+		t.Fatalf("resolveConfig() error: %v", err)
+	}
+	if resolved.Protocols != nil {
+		t.Errorf("Protocols = %v, want nil", resolved.Protocols)
+	}
+}

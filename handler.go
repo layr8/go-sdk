@@ -83,7 +83,7 @@ func (r *handlerRegistry) lookup(msgType string) (handlerEntry, bool) {
 // payloadTypes returns the payload_types list for the join params.
 // Includes unique protocol base URIs derived from registered handlers,
 // always includes "report-problem", and appends "*" if a catch-all is registered.
-func (r *handlerRegistry) payloadTypes() []string {
+func (r *handlerRegistry) payloadTypes(extra ...string) []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -95,6 +95,13 @@ func (r *handlerRegistry) payloadTypes() []string {
 	const problemReportProtocol = "https://didcomm.org/report-problem/2.0"
 	seen[problemReportProtocol] = struct{}{}
 	types = append(types, problemReportProtocol)
+
+	for _, proto := range extra {
+		if _, ok := seen[proto]; !ok {
+			seen[proto] = struct{}{}
+			types = append(types, proto)
+		}
+	}
 
 	for msgType := range r.handlers {
 		proto := deriveProtocol(msgType)
