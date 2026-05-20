@@ -12,10 +12,9 @@ import (
 // PassRunReceiver connects with a handler that returns ErrPass. Blocks until ctx done.
 func PassRunReceiver(ctx context.Context, sc ScenarioContext, onReady func(did string)) error {
 	client, err := layr8.NewClient(layr8.Config{
-		NodeURL:   sc.NodeURL,
-		APIKey:    sc.APIKey,
-		AgentDID:  sc.AgentDID,
-		Protocols: []string{echoProtocol},
+		NodeURL:  sc.NodeURL,
+		APIKey:   sc.APIKey,
+		AgentDID: sc.AgentDID,
 	}, layr8.LogErrors(log.Default()))
 	if err != nil {
 		return fmt.Errorf("create client: %w", err)
