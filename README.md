@@ -68,7 +68,7 @@ Configuration can be set explicitly or via environment variables (used as fallba
 |---|---|---|---|
 | `NodeURL` | `LAYR8_NODE_URL` | Yes | WebSocket URL of the cloud-node |
 | `APIKey` | `LAYR8_API_KEY` | Yes | API key for authentication |
-| `AgentDID` | `LAYR8_AGENT_DID` | No | Agent DID identity (ephemeral if omitted) |
+| `AgentDID` | `LAYR8_AGENT_DID` | Yes | Agent DID identity |
 | `Persistent` | -- | No | Persist DID keys across node restarts |
 | `Protocols` | -- | No | Additional protocol URIs to advertise on join (for sender-only actors) |
 
@@ -80,7 +80,7 @@ client, err := layr8.NewClient(layr8.Config{
     AgentDID: "did:web:myorg:my-agent",
 }, layr8.LogErrors(log.Default()))
 
-// Environment-only configuration (set LAYR8_NODE_URL, LAYR8_API_KEY)
+// Environment-only configuration (set LAYR8_NODE_URL, LAYR8_API_KEY, LAYR8_AGENT_DID)
 client, err := layr8.NewClient(layr8.Config{}, layr8.LogErrors(log.Default()))
 ```
 
@@ -223,7 +223,7 @@ Sign options: `WithPresentationHolderDID(did)`, `WithPresentationFormat(format)`
 
 ## Connection Lifecycle
 
-**DID assignment:** If no `AgentDID` is configured, the cloud-node assigns an ephemeral DID on connect. Retrieve it with `client.DID()`. Set `Persistent: true` to persist DID keys across node restarts.
+**Agent DID:** `AgentDID` is required — it's the DID your agent connects as and the address other agents use to reach it. Set it via `Config` or the `LAYR8_AGENT_DID` env var; read it back at runtime with `client.DID()`. Set `Persistent: true` to persist the DID's keys across node restarts.
 
 **Reconnection:** The SDK automatically reconnects with exponential backoff (1s to 30s) when the connection drops. During reconnection, `Send()` and `Request()` return `ErrNotConnected`.
 

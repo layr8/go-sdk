@@ -19,8 +19,9 @@ type Config struct {
 	// Fallback: LAYR8_API_KEY environment variable.
 	APIKey string
 
-	// AgentDID is the DID identity of this agent.
-	// If empty, an ephemeral DID is created on Connect().
+	// AgentDID is the DID identity of this agent — the address other
+	// agents use to message it. Required: the cloud-node rejects a
+	// connection that doesn't specify a DID.
 	// Fallback: LAYR8_AGENT_DID environment variable.
 	AgentDID string
 

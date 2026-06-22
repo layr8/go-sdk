@@ -21,7 +21,7 @@ type Client struct {
 	closed    bool
 	mu        sync.Mutex
 
-	agentDID string // resolved DID (explicit or assigned by node)
+	agentDID string // resolved DID (from Config or LAYR8_AGENT_DID)
 	onError  ErrorHandler
 
 	// Correlation map for Request/Response pattern
@@ -147,8 +147,8 @@ func (c *Client) Close() error {
 	return nil
 }
 
-// DID returns the agent's DID — either the one provided in Config
-// or the ephemeral DID assigned by the cloud-node on Connect.
+// DID returns the agent's DID — the one provided in Config (or the
+// LAYR8_AGENT_DID env var) that this client connected as.
 func (c *Client) DID() string {
 	return c.agentDID
 }
