@@ -254,7 +254,7 @@ err = loom.CallTool(ctx, "create_workflow", map[string]any{"name": "onboarding"}
 
 ## Watching for changes (SpaceWatcher)
 
-Nothing on the wire tells an SDK "your wallet changed" or "a resource came up", so both are polled. `SpaceWatcher` is the one place that loop lives, on semantics shared with the Node and Elixir SDKs (`contracts/sdk-space-watch.md`).
+Nothing on the wire tells an SDK "your wallet changed" or "a resource came up", so both are polled. `SpaceWatcher` is the one place that loop lives, on semantics shared with every other Layr8 SDK.
 
 ```go
 watcher := layr8.NewSpaceWatcher(layr8.SpaceWatcherOptions{

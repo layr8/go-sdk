@@ -3,11 +3,8 @@ package layr8
 // Space watch — poll, diff and notify on "does my MCP tool surface still look
 // the same".
 //
-// Cross-language contract: contracts/sdk-space-watch.md. @layr8/sdk's
-// SpaceWatcher (src/space-watch.ts) and the layr8 hex package's
-// Layr8.SpaceWatcher are the same abstraction in their languages; all three
-// exist so a caller sees a change at the same latency regardless of which SDK
-// it is built on.
+// Every Layr8 SDK ships this watcher on the same semantics, so a caller sees a
+// change at the same latency regardless of which one it is built on.
 //
 // Two independent signals, both POLLED — nothing on the wire tells an SDK "your
 // wallet changed" or "a resource came up", and that absence is the reason this
@@ -16,7 +13,7 @@ package layr8
 //
 //   - Wallet — the caller's held VG/credential set. A grant minted or revoked in
 //     the portal changes this. Polled every 15s by default.
-//   - Resources — the Space directory's live MCP Instance cards. An mcp-pod
+//   - Resources — the Space directory's live MCP Instance cards. An instance
 //     registering or losing a directory card changes this. Polled every 60s.
 //
 // What a "change" MEANS to do about it stays entirely a consumer decision; this
@@ -99,8 +96,7 @@ func OrderIndependentSignature(items []string) string {
 // to be a momentary blip (a keepalive miss evicting a card that comes straight
 // back) as a real teardown, and acting on it strips every resource-derived tool
 // from every live session. Anything non-empty applies at once; so does an empty
-// result when there was nothing to lose. Ported from the broker's
-// acceptsDiscovery.
+// result when there was nothing to lose.
 func acceptsResourcePoll(isEmpty, hadResources bool, emptyStreak int) bool {
 	return !isEmpty || !hadResources || emptyStreak >= 2
 }

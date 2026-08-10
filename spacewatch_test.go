@@ -8,9 +8,8 @@ import (
 	"time"
 )
 
-// Behavioural contract shared with @layr8/sdk's SpaceWatcher and the layr8 hex
-// package's Layr8.SpaceWatcher: contracts/sdk-space-watch.md. These are the
-// boundary tests for the Go side of it.
+// These pin the behaviour every Layr8 SDK's watcher shares, so the Go side
+// cannot drift from it silently.
 
 // scripted answers one fetch call at a time; the last answer repeats.
 type scripted struct {

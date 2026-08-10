@@ -207,7 +207,7 @@ func selectOne(t *testing.T, scope []map[string]any, recipient, typeURI string) 
 }
 
 func TestScopeMatching(t *testing.T) {
-	// selectGrants mirrors helix's structure_v2.rego.
+	// selectGrants mirrors the node's authorization policy.
 	wildcard := []map[string]any{{"protocol": "*", "messageTypes": []string{"*"}}}
 
 	tests := []struct {

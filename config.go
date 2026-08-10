@@ -52,8 +52,8 @@ type Config struct {
 	// outright. Before this existed nothing in this SDK attached one —
 	// which is what produced "no grant covers this call" denials that read
 	// as a misconfigured grant rather than an absent one. On by default:
-	// opting IN would have left every existing agent in exactly the state
-	// that cost two teams days. See wallet.go.
+	// opting IN would leave every existing agent in exactly the state this
+	// exists to end. See wallet.go.
 	AttachGrants *bool
 
 	// GrantCacheTTL is how long held grants are cached before re-reading.

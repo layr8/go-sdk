@@ -2,7 +2,7 @@ package layr8
 
 // MCP (Model Context Protocol) over Layr8 DIDComm.
 //
-// A growing set of Layr8 services (Loom is the first) expose an MCP surface as
+// A growing set of Layr8 services expose an MCP surface as
 // DIDComm request/reply: a request of type {base}/<method> carrying a JSON-RPC
 // 2.0 body, answered by a {base}/<method>-result message whose body is the
 // JSON-RPC response. The reply echoes the request's DIDComm thid, so
@@ -10,8 +10,8 @@ package layr8
 // boilerplate (protocol subscription, the {base}/… type, the JSON-RPC envelope,
 // and unwrapping result / returning error).
 //
-// Cross-language contract: contracts/mcp-over-didcomm.md. The Node SDK's
-// src/mcp.ts is the same abstraction.
+// Every Layr8 SDK exposes the same binding, so a peer is called the same way
+// whatever language the caller is written in.
 //
 // Usage — Client.MCP must be called BEFORE Connect, like Handle, because it
 // registers the protocol subscription the node needs in order to deliver
