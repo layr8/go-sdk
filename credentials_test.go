@@ -16,7 +16,7 @@ func newTestClientWithREST(t *testing.T, handler http.Handler) *Client {
 	t.Cleanup(srv.Close)
 
 	return &Client{
-		rest:     newRestClient(srv.URL, "test-api-key", nil),
+		rest:     newRestClient(srv.URL, "test-api-key", nil, DefaultRESTTimeout),
 		agentDID: "did:web:test.localhost:test-agent",
 	}
 }

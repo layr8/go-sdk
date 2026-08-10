@@ -3,6 +3,7 @@ package layr8
 import (
 	"os"
 	"testing"
+	"time"
 )
 
 func TestResolveConfig_ExplicitValues(t *testing.T) {
@@ -190,5 +191,100 @@ func TestResolveConfig_NilProtocols(t *testing.T) {
 	}
 	if resolved.Protocols != nil {
 		t.Errorf("Protocols = %v, want nil", resolved.Protocols)
+	}
+}
+
+// --- grant / REST deadlines ---
+
+func TestResolveConfig_GrantDefaults(t *testing.T) {
+	cfg, err := resolveConfig(Config{NodeURL: "ws://localhost:4000", APIKey: "k"})
+	if err != nil {
+		t.Fatalf("resolveConfig: %v", err)
+	}
+	// On by default: a grant the node requires and the SDK does not attach is
+	// indistinguishable, from the caller's side, from one that was never issued.
+	if cfg.AttachGrants == nil || !*cfg.AttachGrants {
+		t.Error("AttachGrants should default to on")
+	}
+	if cfg.GrantCacheTTL != DefaultGrantCacheTTL {
+		t.Errorf("GrantCacheTTL = %v", cfg.GrantCacheTTL)
+	}
+	if cfg.GrantReadTimeout != DefaultGrantReadTimeout {
+		t.Errorf("GrantReadTimeout = %v", cfg.GrantReadTimeout)
+	}
+	if cfg.RESTTimeout != DefaultRESTTimeout {
+		t.Errorf("RESTTimeout = %v", cfg.RESTTimeout)
+	}
+}
+
+func TestResolveConfig_AttachGrantsFromEnv(t *testing.T) {
+	t.Setenv("LAYR8_ATTACH_GRANTS", "false")
+	cfg, _ := resolveConfig(Config{NodeURL: "ws://localhost:4000", APIKey: "k"})
+	if cfg.AttachGrants == nil || *cfg.AttachGrants {
+		t.Fatal("LAYR8_ATTACH_GRANTS=false should turn attachment off")
+	}
+}
+
+func TestResolveConfig_UnrecognisedEnvBoolLeavesTheDefaultAlone(t *testing.T) {
+	// Including the empty string an unset-but-exported variable produces —
+	// which must not read as false.
+	t.Setenv("LAYR8_ATTACH_GRANTS", "")
+	cfg, _ := resolveConfig(Config{NodeURL: "ws://localhost:4000", APIKey: "k"})
+	if cfg.AttachGrants == nil || !*cfg.AttachGrants {
+		t.Fatal("an empty LAYR8_ATTACH_GRANTS should leave attachment on")
+	}
+}
+
+func TestResolveConfig_MillisecondEnvVars(t *testing.T) {
+	t.Setenv("LAYR8_GRANT_CACHE_MS", "5000")
+	t.Setenv("LAYR8_GRANT_READ_TIMEOUT_MS", "500")
+	t.Setenv("LAYR8_REST_TIMEOUT_MS", "1000")
+
+	cfg, _ := resolveConfig(Config{NodeURL: "ws://localhost:4000", APIKey: "k"})
+	if cfg.GrantCacheTTL != 5*time.Second {
+		t.Errorf("GrantCacheTTL = %v", cfg.GrantCacheTTL)
+	}
+	if cfg.GrantReadTimeout != 500*time.Millisecond {
+		t.Errorf("GrantReadTimeout = %v", cfg.GrantReadTimeout)
+	}
+	if cfg.RESTTimeout != time.Second {
+		t.Errorf("RESTTimeout = %v", cfg.RESTTimeout)
+	}
+}
+
+func TestResolveConfig_GarbageEnvFallsBackToTheDefault(t *testing.T) {
+	// A typo must not become a load problem nobody would connect to it.
+	t.Setenv("LAYR8_GRANT_CACHE_MS", "not-a-number")
+	cfg, _ := resolveConfig(Config{NodeURL: "ws://localhost:4000", APIKey: "k"})
+	if cfg.GrantCacheTTL != DefaultGrantCacheTTL {
+		t.Fatalf("GrantCacheTTL = %v, want the default", cfg.GrantCacheTTL)
+	}
+}
+
+func TestResolveConfig_GrantReadTimeoutCannotBeDisabled(t *testing.T) {
+	// A zero deadline would abort every read before it started, turning a
+	// mistyped variable into an agent that attaches nothing at all — the exact
+	// failure the whole feature exists to end. Explicit and env alike.
+	cfg, _ := resolveConfig(Config{
+		NodeURL: "ws://localhost:4000", APIKey: "k", GrantReadTimeout: -1,
+	})
+	if cfg.GrantReadTimeout != DefaultGrantReadTimeout {
+		t.Errorf("explicit negative: GrantReadTimeout = %v", cfg.GrantReadTimeout)
+	}
+
+	t.Setenv("LAYR8_GRANT_READ_TIMEOUT_MS", "0")
+	cfg, _ = resolveConfig(Config{NodeURL: "ws://localhost:4000", APIKey: "k"})
+	if cfg.GrantReadTimeout != DefaultGrantReadTimeout {
+		t.Errorf("env zero: GrantReadTimeout = %v", cfg.GrantReadTimeout)
+	}
+}
+
+func TestResolveConfig_RESTTimeoutCanBeDisabled(t *testing.T) {
+	// The contrast with GrantReadTimeout is deliberate: here "no deadline" is
+	// the pre-existing behaviour and a legitimate thing for an operator with a
+	// slow node to ask for.
+	cfg, _ := resolveConfig(Config{NodeURL: "ws://localhost:4000", APIKey: "k", RESTTimeout: -1})
+	if cfg.RESTTimeout != 0 {
+		t.Fatalf("RESTTimeout = %v, want 0 (unbounded)", cfg.RESTTimeout)
 	}
 }

@@ -71,6 +71,11 @@ Configuration can be set explicitly or via environment variables (used as fallba
 | `AgentDID` | `LAYR8_AGENT_DID` | Yes | Agent DID identity |
 | `Persistent` | -- | No | Persist DID keys across node restarts |
 | `Protocols` | -- | No | Additional protocol URIs to advertise on join (for sender-only actors) |
+| `AttachGrants` | `LAYR8_ATTACH_GRANTS` | No | Attach Verifiable Grants to outbound messages. Default on |
+| `GrantCacheTTL` | `LAYR8_GRANT_CACHE_MS` | No | How long held grants are cached. Default 60s |
+| `GrantReadTimeout` | `LAYR8_GRANT_READ_TIMEOUT_MS` | No | Deadline on the credential read. Default 2s |
+| `RESTTimeout` | `LAYR8_REST_TIMEOUT_MS` | No | Deadline on every other REST call. Default 30s; negative for none |
+| `OnGrantMiss` | -- | No | Called when a grant was needed and not attached — see [Verifiable Grants](#verifiable-grants) |
 
 ```go
 // Explicit configuration
@@ -180,6 +185,92 @@ client.Handle("https://layr8.io/protocols/order/1.0/created",
 )
 ```
 
+## Verifiable Grants
+
+The cloud-node requires a Verifiable Grant for anything its policy does not allow outright. **The SDK attaches the grants covering each outbound message automatically** — on `Send`, on `Request`, and on a handler's reply — so there is nothing to wire up. Turn it off with `Config{AttachGrants: &off}`.
+
+Selection mirrors the policy and deliberately errs wide: everything that plausibly applies goes on the wire, because over-attaching is free (the policy allows on the first passing grant) while withholding one costs a working call and fails silently. Validity and revocation are the node's decision, not this side's.
+
+```go
+// A grant you were just given is invisible until the cache lapses (60s).
+// If you have just been told you were granted something, say so:
+client.RefreshGrants("")
+```
+
+### When a message goes out with nothing attached
+
+The node's denial names the grant it could not find, which reads as "your grant is misconfigured" when the truth is "no credential was ever put on the wire". Only the sender knows which one it was. Wire `OnGrantMiss` and the next such incident is one log line:
+
+```go
+client, err := layr8.NewClient(layr8.Config{
+    OnGrantMiss: func(info layr8.GrantMissInfo) {
+        log.Printf("grant miss: %+v", info)
+    },
+}, layr8.LogErrors(log.Default()))
+```
+
+It fires in three cases, distinguished by which field is set:
+
+| Field | Meaning |
+|---|---|
+| `DenialCode` | The node denied a message we sent with **nothing attached** |
+| `Capped` | More grants covered the message than fit on it (`{Covering: n, Attached: 16}`) |
+| `Err` | The grants could not be **read** — every send after this is flying blind |
+
+It deliberately does **not** fire merely because a message went out unattached: most traffic (discovery, trust-ping, problem reports) needs no grant, and a diagnostic that fires constantly is one nobody reads when it matters.
+
+### Attaching one by hand
+
+`MediaType` is the only field the node's credential extractor filters on, by exact string equality, and it drops everything else **silently** — producing a denial byte-for-byte identical to the one for attaching nothing. Attach the credential **bare**; a Verifiable Presentation (`application/vp+jwt`) is dropped on that rule.
+
+```go
+layr8.Attachment{
+    ID:        "urn:uuid:…",
+    MediaType: "application/vc+jwt",
+    Data:      layr8.AttachmentData{JWS: compactJWS},
+}
+```
+
+## MCP (tool calling) over DIDComm
+
+Layr8 services expose an MCP surface as DIDComm request/reply. `client.MCP()` removes the boilerplate — the protocol subscription, the type mapping (`tools/call` → `{base}/tools-call`), the JSON-RPC envelope, and unwrapping `result`.
+
+It must be called **before** `Connect`, like `Handle`: it registers the protocol subscription the node needs in order to deliver replies.
+
+```go
+mcp, err := client.MCP()               // default base: mcp/1.0
+if err := client.Connect(ctx); err != nil { ... }
+
+loom := mcp.Peer(loomDID)
+
+info, err := loom.Initialize(ctx, nil)
+tools, err := loom.ListTools(ctx)
+
+var out MyResult
+err = loom.CallTool(ctx, "create_workflow", map[string]any{"name": "onboarding"}, &out)
+```
+
+`*MCPError` is returned when the peer answers with a JSON-RPC `error`; a DIDComm-level failure — including an authorization denial — returns `*ProblemReportError`, and an unanswered call returns the context's error.
+
+## Watching for changes (SpaceWatcher)
+
+Nothing on the wire tells an SDK "your wallet changed" or "a resource came up", so both are polled. `SpaceWatcher` is the one place that loop lives, on semantics shared with every other Layr8 SDK.
+
+```go
+watcher := layr8.NewSpaceWatcher(layr8.SpaceWatcherOptions{
+    FetchWallet:       listMyGrantIDs,
+    FetchResources:    listMCPInstanceDIDs,
+    OnWalletChange:    func([]string) { rebuildTools() },
+    OnResourcesChange: func(rs []string) { rebuildRoutes(rs) },
+})
+watcher.Start(ctx)     // seeds both baselines silently
+defer watcher.Stop()
+
+watcher.RefreshWallet(ctx)  // pull the next check forward
+```
+
+Neither callback fires on the first successful poll — a cold start is not a change. A fetch error never wipes state: it goes to `OnError` and the last-accepted value is retained, so a transient failure never reads as "everything disappeared". An empty *resource* result is only believed after two consecutive empty polls, since a directory answering with nothing is as likely to be a keepalive blip as a real teardown; an empty *wallet* is believed immediately, because that is a real answer.
+
 ## W3C Verifiable Credentials
 
 Sign, verify, store, list, and retrieve [W3C Verifiable Credentials](https://www.w3.org/TR/vc-data-model-2.0/) via the cloud-node's REST API.
@@ -208,6 +299,8 @@ Sign options: `WithIssuerDID(did)`, `WithCredentialFormat(format)`. Verify optio
 ## W3C Verifiable Presentations
 
 Wrap signed credentials into a holder-signed presentation envelope.
+
+> **A presentation is not how you authorize a message.** The node keeps only attachments whose `media_type` is exactly `application/vc+jwt` and drops a `vp+jwt` silently — an identical denial to attaching nothing. Attach the credential bare, or let the SDK do it, which it does by default. See [Verifiable Grants](#verifiable-grants).
 
 ```go
 // Sign
