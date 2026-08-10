@@ -19,7 +19,7 @@ type restClient struct {
 	httpClient *http.Client
 }
 
-func newRestClient(baseURL, apiKey string, dialContext func(ctx context.Context, network, addr string) (net.Conn, error)) *restClient {
+func newRestClient(baseURL, apiKey string, dialContext func(ctx context.Context, network, addr string) (net.Conn, error), timeout time.Duration) *restClient {
 	dial := dialContext
 	if dial == nil {
 		// Default: resolve *.localhost to 127.0.0.1 (RFC 6761).
@@ -35,7 +35,12 @@ func newRestClient(baseURL, apiKey string, dialContext func(ctx context.Context,
 		baseURL: baseURL,
 		apiKey:  apiKey,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			// The whole-call deadline. A per-call one is layered on top with
+			// context (see wallet.heldBy): http.Client.Timeout cannot be
+			// tightened for a single request, and the grant read — which sits in
+			// front of every send — needs a much shorter bound than a credential
+			// sign does.
+			Timeout: timeout,
 			Transport: &http.Transport{
 				DialContext: dial,
 			},

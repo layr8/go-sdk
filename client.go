@@ -27,9 +27,33 @@ type Client struct {
 	// Correlation map for Request/Response pattern
 	pending sync.Map // threadID -> chan *Message
 
+	// wallet is nil when Config.AttachGrants is off.
+	wallet *wallet
+	// unattached records messages that went out with nothing attached, keyed
+	// by thread, so a denial can be matched back to them. Bounded by AGE — a
+	// diagnostic, not a ledger. See rememberUnattached.
+	unattachedMu sync.Mutex
+	unattached   map[string]unattachedRecord
+	// mcpBases guards MCP() against registering the same base twice.
+	mcpBases map[string]struct{}
+
 	disconnectFn func(error)
 	reconnectFn  func()
 }
+
+type unattachedRecord struct {
+	at      time.Time
+	to      []string
+	msgType string
+}
+
+// unattachedWindow is how long a message sent with nothing attached is kept,
+// waiting for a denial.
+//
+// The node evaluates before it delivers, so the denial follows its message by a
+// round trip — one second would cover it. A minute is chosen to survive a paused
+// process or a reconnect, and it is what bounds the map: see rememberUnattached.
+const unattachedWindow = time.Minute
 
 // NewClient creates a new Layr8 client with the given configuration.
 // The onError handler is called for SDK-level errors that cannot be returned
@@ -46,14 +70,84 @@ func NewClient(cfg Config, onError ErrorHandler) (*Client, error) {
 	}
 
 	restURL := restURLFromWebSocket(resolved.NodeURL)
+	rest := newRestClient(restURL, resolved.APIKey, resolved.DialContext, resolved.RESTTimeout)
 
-	return &Client{
-		cfg:      resolved,
-		rest:     newRestClient(restURL, resolved.APIKey, resolved.DialContext),
-		registry: newHandlerRegistry(),
-		agentDID: resolved.AgentDID,
-		onError:  onError,
-	}, nil
+	c := &Client{
+		cfg:        resolved,
+		rest:       rest,
+		registry:   newHandlerRegistry(),
+		agentDID:   resolved.AgentDID,
+		onError:    onError,
+		unattached: make(map[string]unattachedRecord),
+		mcpBases:   make(map[string]struct{}),
+	}
+
+	// On by default. A grant the node requires and the SDK does not attach is
+	// indistinguishable, from the caller's side, from a grant that was never
+	// issued — and the denial names the grant, not the omission.
+	if resolved.AttachGrants == nil || *resolved.AttachGrants {
+		c.wallet = newWallet(restCredentialReader(rest), resolved.GrantCacheTTL, resolved.GrantReadTimeout)
+	}
+
+	return c, nil
+}
+
+// MCP sets up MCP (Model Context Protocol) over DIDComm on a protocol base and
+// returns a binding whose Peer(did) yields a caller.
+//
+// Pass no base to use DefaultMCPBase. Must be called BEFORE Connect (like
+// Handle): it registers the protocol subscription the cloud-node needs in order
+// to deliver {base}/* replies. Idempotent per base — calling it twice returns a
+// second binding over the same subscription rather than erroring the way a
+// duplicate Handle would.
+func (c *Client) MCP(base ...string) (*MCPBinding, error) {
+	b := DefaultMCPBase
+	if len(base) > 0 && base[0] != "" {
+		b = base[0]
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.connected {
+		return nil, ErrAlreadyConnected
+	}
+	if c.closed {
+		return nil, ErrClientClosed
+	}
+
+	if _, ok := c.mcpBases[b]; !ok {
+		// A no-op handler whose type derives the base protocol subscribes the
+		// client to it (see handlerRegistry.payloadTypes). Correlated replies
+		// are consumed in handleInboundMessage BEFORE handler lookup, so this
+		// handler only ever fires for an *uncorrelated* {base}/… message (none
+		// in normal request/reply use) — ErrPass is the safe default.
+		if err := c.registry.register(b+"/_mcp", func(*Message) (*Message, error) {
+			return nil, ErrPass
+		}); err != nil {
+			return nil, err
+		}
+		c.mcpBases[b] = struct{}{}
+	}
+
+	return &MCPBinding{client: c, base: b}, nil
+}
+
+// RefreshGrants forgets the cached Verifiable Grants for did (empty means this
+// agent's), so the next message re-reads them.
+//
+// The cache TTL is the whole freshness story: a grant minted seconds ago is
+// invisible until it lapses. An agent that has just been TOLD it was granted
+// something — by a request/approve flow, or by a person on the other end of a
+// chat — should not have to wait out a timer it cannot see.
+func (c *Client) RefreshGrants(did string) {
+	if c.wallet == nil {
+		return
+	}
+	if did == "" {
+		did = c.agentDID
+	}
+	c.wallet.refresh(did)
 }
 
 // Handle registers a handler for the given DIDComm message type.
@@ -175,6 +269,11 @@ func (c *Client) handleInboundMessage(payload []byte) {
 		})
 		return
 	}
+
+	// Before routing, not after: a denial that resolves a pending Request is
+	// handed to the waiter and never reaches a handler, and a denial with no
+	// waiter takes the orphan path below — noteDenial has to see both.
+	c.noteDenial(msg)
 
 	// Check if this is a response to a pending Request.
 	// Match on thid first (normal responses), then fall back to pthid
@@ -413,6 +512,8 @@ func (c *Client) Send(ctx context.Context, msg *Message, opts ...SendOption) err
 		msg.From = c.agentDID
 	}
 
+	c.withGrants(ctx, msg)
+
 	data, err := marshalDIDComm(msg)
 	if err != nil {
 		return err
@@ -459,10 +560,13 @@ func (c *Client) Request(ctx context.Context, msg *Message, opts ...RequestOptio
 		msg.ParentThreadID = o.parentThreadID
 	}
 
-	// Register response channel
+	// Register response channel BEFORE the grant read, so a reply that arrives
+	// while the wallet is still working still finds someone waiting for it.
 	respCh := make(chan *Message, 1)
 	c.pending.Store(msg.ThreadID, respCh)
 	defer c.pending.Delete(msg.ThreadID)
+
+	c.withGrants(ctx, msg)
 
 	// Send the message (with server reply checking)
 	data, err := marshalDIDComm(msg)
@@ -494,6 +598,161 @@ func (c *Client) Request(ctx context.Context, msg *Message, opts ...RequestOptio
 	}
 }
 
+// withGrants attaches the Verifiable Grants that cover this message.
+//
+// The node requires one for anything its policy does not allow outright, and
+// nothing in this SDK attached any — there was no enforcement on outgoing
+// requests because there was no mechanism. An agent connecting directly sent
+// nothing and was denied with "no grant covers this call": a message that reads
+// as "your grant is misconfigured" when the truth is "no credential was ever put
+// on the wire".
+//
+// Caller-supplied attachments WIN and are never displaced — someone passing
+// their own has a reason, and silently overriding it would be the second
+// confusing thing to happen to that message.
+//
+// A wallet failure does NOT block the send, which is why this returns nothing.
+// The node is the authority on whether this message needed a grant, and most
+// traffic (discovery, trust-ping, problem reports) needs none; refusing here on
+// a transient fetch error would take down calls that were never going to need
+// us. The send proceeds unattached and OnGrantMiss says so.
+//
+// "Does not block" has to hold for a read that HANGS, not just one that fails
+// fast — a hang is the commoner production failure. The bound is
+// Config.GrantReadTimeout, enforced on the request itself, and a lapsed deadline
+// arrives here as an ordinary read error.
+func (c *Client) withGrants(ctx context.Context, msg *Message) {
+	if c.wallet == nil || len(msg.Attachments) > 0 {
+		return
+	}
+
+	attachments, err := c.wallet.attachmentsFor(ctx, msg.From, msg, func(covering, attached int) {
+		// The cap left credentials off. Announced at once rather than
+		// remembered for a denial: unlike "nothing covered it", this is never
+		// the normal shape of a message that needs no grant, and the holding
+		// that triggers it will trigger it on every send until someone prunes
+		// the wallet.
+		c.notifyGrantMiss(GrantMissInfo{
+			To:     msg.To,
+			Type:   msg.Type,
+			Capped: &GrantCapInfo{Covering: covering, Attached: attached},
+		})
+	})
+	if err != nil {
+		// A read failure IS announced immediately: unlike "nothing covered it",
+		// it is never normal, and it means every subsequent send is flying
+		// blind.
+		c.notifyGrantMiss(GrantMissInfo{To: msg.To, Type: msg.Type, Err: err})
+		return
+	}
+
+	if len(attachments) > 0 {
+		msg.Attachments = attachments
+		return
+	}
+
+	// Nothing covered it — remembered, not announced.
+	//
+	// Announcing here fires on every message that legitimately needs no grant:
+	// discovery, trust-ping, problem reports. For the majority of agents, which
+	// hold no grants at all, that is one callback per outbound message — and a
+	// diagnostic that fires constantly is one nobody reads when it matters. The
+	// signal actually wanted is "the node denied, and we had attached nothing",
+	// which needs the denial: see noteDenial.
+	c.rememberUnattached(msg)
+}
+
+func (c *Client) notifyGrantMiss(info GrantMissInfo) {
+	if c.cfg.OnGrantMiss == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			c.onError(SDKError{
+				Kind:      ErrHandlerPanic,
+				Cause:     fmt.Errorf("OnGrantMiss panic: %v", r),
+				Timestamp: time.Now(),
+			})
+		}
+	}()
+	c.cfg.OnGrantMiss(info)
+}
+
+// rememberUnattached records a message that went out unattached. Evicted by
+// AGE, not by count.
+//
+// A count cap drops the entry that mattered. The denial for a message arrives
+// within seconds of it, but a cap counts every unattached message in between —
+// and this records EVERY message it attaches nothing to, which for the agents
+// this feature is aimed at (the ones holding no grants at all) is every
+// discovery, trust-ping and problem report they send. Enough of those between
+// the send and its denial and OnGrantMiss never fires: the one thing it exists
+// for, lost to traffic that never needed a grant.
+//
+// Age bounds the map by SEND RATE × window instead, which is the honest bound —
+// the entries are small and the window is short.
+func (c *Client) rememberUnattached(msg *Message) {
+	now := time.Now()
+	key := msg.ThreadID
+	if key == "" {
+		key = msg.ID
+	}
+
+	c.unattachedMu.Lock()
+	defer c.unattachedMu.Unlock()
+
+	for k, rec := range c.unattached {
+		if now.Sub(rec.at) >= unattachedWindow {
+			delete(c.unattached, k)
+		}
+	}
+	c.unattached[key] = unattachedRecord{at: now, to: msg.To, msgType: msg.Type}
+}
+
+// noteDenial reacts to an inbound problem report.
+//
+// If it is an authorization denial for a message we sent with nothing attached,
+// that is the one case OnGrantMiss exists for: the node names the grant it could
+// not find, and only this side knows no credential was ever on the wire.
+func (c *Client) noteDenial(msg *Message) {
+	if !isProblemReport(msg.Type) {
+		return
+	}
+
+	var prob ProblemReportError
+	if err := msg.UnmarshalBody(&prob); err != nil {
+		return
+	}
+	if !strings.Contains(prob.Code, "authz") {
+		return
+	}
+
+	// ParentThreadID is the one that matches in production, and it is SECOND
+	// only because a peer is free to use either. The node's own denial sets
+	// pthid — to the denied message's thid or, for a message sent without one,
+	// its id — and sets no thid at all.
+	for _, key := range []string{msg.ThreadID, msg.ParentThreadID} {
+		if key == "" {
+			continue
+		}
+		c.unattachedMu.Lock()
+		rec, ok := c.unattached[key]
+		if ok {
+			delete(c.unattached, key)
+		}
+		c.unattachedMu.Unlock()
+
+		if ok {
+			c.notifyGrantMiss(GrantMissInfo{
+				To:         rec.to,
+				Type:       rec.msgType,
+				DenialCode: prob.Code,
+			})
+			return
+		}
+	}
+}
+
 // isProblemReport checks if a message type is a DIDComm problem report.
 func isProblemReport(msgType string) bool {
 	return strings.HasPrefix(msgType, "https://didcomm.org/report-problem/")
@@ -506,6 +765,11 @@ func (c *Client) sendMessage(msg *Message) error {
 	if msg.From == "" {
 		msg.From = c.agentDID
 	}
+
+	// A handler's reply is a message the node authorizes exactly like the
+	// request that prompted it, so it needs its grants attached too. There is no
+	// caller context on this path; the wallet's own read deadline is the bound.
+	c.withGrants(context.Background(), msg)
 
 	data, err := marshalDIDComm(msg)
 	if err != nil {
