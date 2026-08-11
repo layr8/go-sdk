@@ -6,6 +6,8 @@ This file starts here. Earlier releases are recorded only in git history.
 
 ## [Unreleased]
 
+## [v0.1.6] - 2026-08-10
+
 ### Added
 
 - **Verifiable Grants are attached to outbound messages** — automatically, on
@@ -67,3 +69,5 @@ This file starts here. Earlier releases are recorded only in git history.
   `AttachGrants` to `&false` to opt out entirely.
 
 All exported API is additive; no existing signature or behaviour was removed.
+
+[v0.1.6]: https://github.com/layr8/go-sdk/releases/tag/v0.1.6
