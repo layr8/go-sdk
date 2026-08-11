@@ -53,10 +53,10 @@ On join, the SDK sends `reply_protocol: true`. The cloud-node responds with a `c
 ### Compat Suite
 
 **Scenario**:
-A compat-suite test case. Each scenario is a pair of functions (`runReceiver`, `runSender`) that exercise a specific SDK behavior against a cloud-node.
+A cross-language compatibility test case. Each scenario is a pair of functions (`runReceiver`, `runSender`) that exercise a specific SDK behavior against a cloud-node.
 
 **Compat Image**:
-A Docker image (`ghcr.io/layr8/go-sdk/compat:{version}`) that packages scenario code and a CLI adapter. Consumed by the compat-suite orchestrator.
+A Docker image (`ghcr.io/layr8/go-sdk/compat:{version}`) that packages scenario code and a CLI adapter. Consumed by the compatibility orchestrator.
 
 **Ready Signal**:
 A JSON line (`{"status":"ready","did":"..."}`) printed to stdout by a receiver process after connecting and registering handlers. The orchestrator waits for this before launching the sender.
@@ -65,10 +65,10 @@ A JSON line (`{"status":"ready","did":"..."}`) printed to stdout by a receiver p
 Go test adapter — runs scenarios against real cloud-node Docker containers in-process.
 
 **Layer 2**:
-CLI adapter — implements the compat-suite orchestrator's interface (`--mode`, `--scenario`, `--node`, `--did`, `--list-scenarios`).
+CLI adapter — implements the compatibility orchestrator's interface (`--mode`, `--scenario`, `--node`, `--did`, `--list-scenarios`).
 
-**Compat-suite Orchestrator**:
-A separate repo (`layr8/compat-suite`) that pairs SDK compat images across languages and cloud-node versions, runs test matrices, and produces compatibility reports.
+**Compatibility orchestrator**:
+A separate repository that pairs SDK compat images across languages and cloud-node versions, runs test matrices, and produces compatibility reports.
 
 ## Relationships
 

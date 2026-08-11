@@ -3,7 +3,7 @@
 ## Problem
 
 The Go SDK (`layr8/go-sdk`) has no compat test infrastructure. The
-compat-suite currently has a stub Dockerfile that just prints
+The compatibility orchestrator currently has a stub Dockerfile that just prints
 `{"status":"fail","scenario":"unimplemented"}`. All compat scenarios
 need to be implemented from scratch.
 
@@ -198,9 +198,10 @@ jobs:
     needs: [publish-compat-image, validate-version]
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger compat-suite gate
+      - name: Trigger the compatibility gate
         run: |
-          gh api repos/layr8/compat-suite/dispatches \
+          GATE_REPO=layr8/compat-suite  # hygiene-ok: documents the real dispatch target
+          gh api "repos/$GATE_REPO/dispatches" \
             -f event_type=gate \
             -f "client_payload[sdk]=go" \
             -f "client_payload[version]=${{ needs.validate-version.outputs.version }}"
@@ -208,14 +209,14 @@ jobs:
           GH_TOKEN: ${{ secrets.COMPAT_GATE_PAT }}
 ```
 
-### Compat-Suite Trigger
+### Compatibility Gate Trigger
 
 The `compat-gate` job fires a `repository_dispatch` event (type `gate`)
-to `layr8/compat-suite`. This triggers the gate workflow which pulls
+to the compatibility orchestrator's repository. This triggers the gate workflow which pulls
 the freshly-published compat image and runs the cross-language matrix.
 
 **Required secret**: `COMPAT_GATE_PAT` — a PAT (or fine-grained token)
-with `repo` scope on `layr8/compat-suite`. Same token used by all SDK
+with `repo` scope on the orchestrator's repository. Same token used by all SDK
 repos.
 
 ### GOPROXY Indexing
