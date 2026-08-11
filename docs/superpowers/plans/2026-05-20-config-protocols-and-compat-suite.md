@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add `Config.Protocols` for sender-only actors and implement the full the compatibility suite (echo, pass, wildcard, disconnected scenarios) with CLI adapter, Dockerfile, and CI.
+**Goal:** Add `Config.Protocols` for sender-only actors and implement the full compatibility suite (echo, pass, wildcard, disconnected scenarios) with CLI adapter, Dockerfile, and CI.
 
 **Architecture:** `Config.Protocols` merges with handler-derived protocols (deduplicated, problem-report always first). The `compat/` directory is a separate Go module with a `replace` directive pointing to the parent SDK. Scenarios are plain functions matching the Python SDK's pattern. The CLI adapter implements the compatibility orchestrator contract.
 
