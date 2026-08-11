@@ -1,0 +1,44 @@
+name: Public hygiene
+
+# Fails when text that only resolves inside the organisation is about to become
+# public. See scripts/check-public-hygiene.sh for what is checked and why.
+#
+# Two triggers, because a Go module has no build step to gate. The module the
+# proxy serves is the tagged source tree in full — docs and notes included — and
+# once a version is fetched it is cached immutably and cannot be withdrawn. The
+# only workable gate is therefore keeping `main` clean:
+#
+#   pull_request  — added lines only, so deleting a leak is never a failure.
+#   push to main  — the whole tree, so any tag cut from it is clean by
+#                   construction.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check
+        env:
+          # Absent on pull requests from forks, which cannot read secrets. The
+          # structural checks still run there; the named check reports that it
+          # was skipped rather than passing quietly, and the push to main is
+          # checked again with the secret.
+          INTERNAL_NAMES: ${{ secrets.INTERNAL_NAMES }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            ./scripts/check-public-hygiene.sh --diff "origin/${{ github.base_ref }}"
+          else
+            ./scripts/check-public-hygiene.sh --tree
+          fi

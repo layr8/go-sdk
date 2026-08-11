@@ -390,7 +390,7 @@ cd compat && go run ./cmd/compat/ --list-scenarios  # List available scenarios
 
 Scenarios: `echo`, `pass`, `wildcard`, `disconnected`. See [notes/features/prd-go-sdk-compat.md](notes/features/prd-go-sdk-compat.md) for architecture details.
 
-The CI pipeline builds the compat module on every PR. On release, a Docker image is published to `ghcr.io/layr8/go-sdk/compat:{version}` and the compat-suite orchestrator is triggered.
+The CI pipeline builds the compat module on every PR. On release, a Docker image is published to `ghcr.io/layr8/go-sdk/compat:{version}` and the cross-language compatibility gate is triggered.
 
 ## Architecture
 

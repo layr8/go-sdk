@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add `Config.Protocols` for sender-only actors and implement the full compat-suite (echo, pass, wildcard, disconnected scenarios) with CLI adapter, Dockerfile, and CI.
+**Goal:** Add `Config.Protocols` for sender-only actors and implement the full the compatibility suite (echo, pass, wildcard, disconnected scenarios) with CLI adapter, Dockerfile, and CI.
 
-**Architecture:** `Config.Protocols` merges with handler-derived protocols (deduplicated, problem-report always first). The `compat/` directory is a separate Go module with a `replace` directive pointing to the parent SDK. Scenarios are plain functions matching the Python SDK's pattern. The CLI adapter implements the compat-suite orchestrator contract.
+**Architecture:** `Config.Protocols` merges with handler-derived protocols (deduplicated, problem-report always first). The `compat/` directory is a separate Go module with a `replace` directive pointing to the parent SDK. Scenarios are plain functions matching the Python SDK's pattern. The CLI adapter implements the compatibility orchestrator contract.
 
 **Tech Stack:** Go 1.25, Docker, GitHub Actions, ghcr.io
 
@@ -34,7 +34,7 @@
 | Create | `compat/scenarios/wildcard.go` | HandleAll catch-all scenario |
 | Create | `compat/scenarios/disconnected.go` | Offline receiver scenario |
 | Create | `compat/cmd/compat/main.go` | CLI adapter (Layer 2) |
-| Create | `compat/Dockerfile` | Container image for compat-suite |
+| Create | `compat/Dockerfile` | Container image for the compatibility suite |
 | Modify | `.github/workflows/ci.yaml` | Add compat build check |
 
 ---
@@ -138,7 +138,7 @@ func TestHandlerRegistry_PayloadTypesDeduplicatesExtras(t *testing.T) {
 
 - [ ] **Step 3: Run tests to verify they fail**
 
-Run: `cd /Users/zscott/dev/github-layr8/go-sdk && go test ./... -run "TestResolveConfig_Protocols|TestHandlerRegistry_PayloadTypesWith|TestHandlerRegistry_PayloadTypesDedup" -v`
+Run: `cd <repo> && go test ./... -run "TestResolveConfig_Protocols|TestHandlerRegistry_PayloadTypesWith|TestHandlerRegistry_PayloadTypesDedup" -v`
 
 Expected: Compilation errors — `Config` has no field `Protocols`, `payloadTypes` takes no arguments.
 
@@ -222,14 +222,14 @@ protocols := c.registry.payloadTypes(c.cfg.Protocols...)
 
 - [ ] **Step 4: Run all tests**
 
-Run: `cd /Users/zscott/dev/github-layr8/go-sdk && go test ./... -v`
+Run: `cd <repo> && go test ./... -v`
 
 Expected: All tests pass. The existing `payloadTypes()` callers with no args still work because of the variadic signature.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/zscott/dev/github-layr8/go-sdk
+cd <repo>
 git add config.go config_test.go handler.go handler_test.go client.go
 git commit -m "Add Config.Protocols for sender-only actors
 
@@ -261,7 +261,7 @@ replace github.com/layr8/go-sdk => ../
 
 - [ ] **Step 2: Run go mod tidy to resolve dependencies**
 
-Run: `cd /Users/zscott/dev/github-layr8/go-sdk/compat && go mod tidy`
+Run: `cd <repo>/compat && go mod tidy`
 
 Expected: `go.sum` is generated, indirect dependencies pulled in.
 
@@ -315,14 +315,14 @@ func ElapsedMs(start time.Time) int64 {
 
 - [ ] **Step 5: Verify the module compiles**
 
-Run: `cd /Users/zscott/dev/github-layr8/go-sdk/compat && go build ./scenarios/...`
+Run: `cd <repo>/compat && go build ./scenarios/...`
 
 Expected: Compiles with no errors.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /Users/zscott/dev/github-layr8/go-sdk
+cd <repo>
 git add compat/go.mod compat/go.sum compat/cloud-nodes.json compat/scenarios/types.go
 git commit -m "Scaffold compat module with types and cloud-nodes
 
@@ -443,14 +443,14 @@ func EchoRunSender(ctx context.Context, sc SenderContext) ScenarioResult {
 
 - [ ] **Step 2: Verify it compiles**
 
-Run: `cd /Users/zscott/dev/github-layr8/go-sdk/compat && go build ./scenarios/...`
+Run: `cd <repo>/compat && go build ./scenarios/...`
 
 Expected: Compiles with no errors.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/zscott/dev/github-layr8/go-sdk
+cd <repo>
 git add compat/scenarios/echo.go
 git commit -m "Add echo compat scenario
 
@@ -555,14 +555,14 @@ func PassRunSender(ctx context.Context, sc SenderContext) ScenarioResult {
 
 - [ ] **Step 2: Verify it compiles**
 
-Run: `cd /Users/zscott/dev/github-layr8/go-sdk/compat && go build ./scenarios/...`
+Run: `cd <repo>/compat && go build ./scenarios/...`
 
 Expected: Compiles with no errors.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/zscott/dev/github-layr8/go-sdk
+cd <repo>
 git add compat/scenarios/pass.go
 git commit -m "Add pass compat scenario
 
@@ -722,14 +722,14 @@ func WildcardRunSender(ctx context.Context, sc SenderContext) ScenarioResult {
 
 - [ ] **Step 2: Verify it compiles**
 
-Run: `cd /Users/zscott/dev/github-layr8/go-sdk/compat && go build ./scenarios/...`
+Run: `cd <repo>/compat && go build ./scenarios/...`
 
 Expected: Compiles with no errors.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/zscott/dev/github-layr8/go-sdk
+cd <repo>
 git add compat/scenarios/wildcard.go
 git commit -m "Add wildcard compat scenario
 
@@ -836,14 +836,14 @@ func DisconnectedRunSender(ctx context.Context, sc SenderContext) ScenarioResult
 
 - [ ] **Step 2: Verify it compiles**
 
-Run: `cd /Users/zscott/dev/github-layr8/go-sdk/compat && go build ./scenarios/...`
+Run: `cd <repo>/compat && go build ./scenarios/...`
 
 Expected: Compiles with no errors.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/zscott/dev/github-layr8/go-sdk
+cd <repo>
 git add compat/scenarios/disconnected.go
 git commit -m "Add disconnected compat scenario
 
@@ -989,24 +989,24 @@ func envOrDefault(key, fallback string) string {
 
 - [ ] **Step 2: Verify it compiles**
 
-Run: `cd /Users/zscott/dev/github-layr8/go-sdk/compat && go build ./cmd/compat/`
+Run: `cd <repo>/compat && go build ./cmd/compat/`
 
 Expected: Produces a `compat` binary.
 
 - [ ] **Step 3: Verify --list-scenarios works**
 
-Run: `cd /Users/zscott/dev/github-layr8/go-sdk/compat && go run ./cmd/compat/ --list-scenarios`
+Run: `cd <repo>/compat && go run ./cmd/compat/ --list-scenarios`
 
 Expected: JSON array containing `echo`, `pass`, `wildcard`, `disconnected` (order may vary).
 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/zscott/dev/github-layr8/go-sdk
+cd <repo>
 git add compat/cmd/compat/main.go
 git commit -m "Add compat CLI adapter (Layer 2)
 
-Implements the compat-suite orchestrator contract:
+Implements the compatibility orchestrator contract:
 --mode, --scenario, --node, --did, --list-scenarios.
 Receiver emits ready signal JSON to stdout.
 Sender prints ScenarioResult JSON to stdout."
@@ -1049,7 +1049,7 @@ ENTRYPOINT ["compat"]
 
 - [ ] **Step 2: Verify Docker build**
 
-Run: `cd /Users/zscott/dev/github-layr8/go-sdk && docker build -f compat/Dockerfile -t go-sdk-compat:local .`
+Run: `cd <repo> && docker build -f compat/Dockerfile -t go-sdk-compat:local .`
 
 Expected: Image builds successfully.
 
@@ -1062,7 +1062,7 @@ Expected: JSON array with the four scenario names.
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/zscott/dev/github-layr8/go-sdk
+cd <repo>
 git add compat/Dockerfile
 git commit -m "Add compat Dockerfile
 
@@ -1133,7 +1133,7 @@ jobs:
 - [ ] **Step 2: Commit**
 
 ```bash
-cd /Users/zscott/dev/github-layr8/go-sdk
+cd <repo>
 git add .github/workflows/ci.yaml
 git commit -m "Add compat build check to CI
 
@@ -1173,13 +1173,13 @@ cd compat && go run ./cmd/compat/ --list-scenarios  # List available scenarios
 
 Scenarios: `echo`, `pass`, `wildcard`, `disconnected`. See [notes/features/prd-go-sdk-compat.md](notes/features/prd-go-sdk-compat.md) for architecture details.
 
-The CI pipeline builds the compat module on every PR. On release, a Docker image is published to `ghcr.io/layr8/go-sdk/compat:{version}` and the compat-suite orchestrator is triggered.
+The CI pipeline builds the compat module on every PR. On release, a Docker image is published to `ghcr.io/layr8/go-sdk/compat:{version}` and the compatibility orchestrator is triggered.
 ```
 
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/zscott/dev/github-layr8/go-sdk
+cd <repo>
 git add README.md
 git commit -m "Document Config.Protocols and compat suite"
 ```

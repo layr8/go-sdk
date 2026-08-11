@@ -1,8 +1,8 @@
-# LAYR8-607: Reply Protocol, Wildcard Binding, Capability Negotiation
+# Reply Protocol, Wildcard Binding, Capability Negotiation
 
 ## Summary
 
-LAYR8-580 added a new plugin dispatch protocol to the cloud node. The Go SDK needs:
+The cloud node added a new plugin dispatch protocol to the cloud node. The Go SDK needs:
 
 1. **Capability negotiation** - Send `reply_protocol: true` in join params, parse `capabilities` from join reply, operate in new mode (`dispatch_reply`) vs legacy mode
 2. **dispatch_reply event** - After each dispatched message, send `dispatch_reply` with status `handled`, `pass`, or `error`
