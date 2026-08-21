@@ -241,8 +241,14 @@ func TestClient_Grants_CallerSuppliedAttachmentsAreNeverDisplaced(t *testing.T) 
 
 	client, ctx := connectedClient(t, wsURL, Config{})
 	msg := toolCall()
+	// A GRANT of the caller's own. The fixture used to be an undecodable
+	// three-segment string, which now reads as an identity credential (no
+	// scope) and so exercises the narrowing in identity_test.go instead of this
+	// rule.
 	msg.Attachments = []Attachment{{
-		ID: "mine", MediaType: "application/vc+jwt", Data: AttachmentData{JWS: "caller.jwt.x"},
+		ID:        "mine",
+		MediaType: "application/vc+jwt",
+		Data:      AttachmentData{JWS: rawJWTOf(t, grantRecord(t, grantOpts{id: "mine"}))},
 	}}
 	if err := client.Send(ctx, msg); err != nil {
 		t.Fatalf("Send: %v", err)

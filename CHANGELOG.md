@@ -6,6 +6,31 @@ This file starts here. Earlier releases are recorded only in git history.
 
 ## [Unreleased]
 
+### Added
+
+- `IdentityAttachment(credentialJWS)` — a first-class way to attach an
+  **identity credential** (a credential about who the sender is, with no
+  `credentialSubject.scope`) so it reaches the cloud-node's
+  `sender_credentials` policy input, where a grant's `senderCredentials`
+  requirement can see it. It builds the attachment; **the caller names the
+  credential**. The SDK does not choose: the requirement being satisfied lives
+  in the recipient's grant and never reaches the sender, so automatic selection
+  could only mean "attach everything the holder has", which is a disclosure
+  decision, not a convenience. Returns `ErrNotCompactJWS` for anything that is
+  not a compact JWS, and `ErrCredentialIsGrant` for a credential that carries a
+  scope — that is a grant, and attached this way it would be routed as one and
+  satisfy nothing.
+- `IsIdentityAttachment(attachment)`, the same test applied to an attachment
+  already on a message, and `CredentialMediaType`.
+
+### Changed
+
+- Caller-supplied attachments still displace the wallet, with one narrowing:
+  when they are **all** identity credentials, the wallet's grants are appended
+  after them instead. Saying who you are must not stop you saying what you may
+  do — under the old rule it did, and the node's denial then read "no grant
+  covers this call". Anything else a caller attaches behaves exactly as before.
+
 ## [v0.1.6] - 2026-08-10
 
 ### Added
