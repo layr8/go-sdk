@@ -4,7 +4,7 @@ All notable changes to `github.com/layr8/go-sdk`. Format loosely follows [Keep a
 
 This file starts here. Earlier releases are recorded only in git history.
 
-## [Unreleased]
+## [v0.1.7] - 2026-08-21
 
 ### Added
 
@@ -95,4 +95,5 @@ This file starts here. Earlier releases are recorded only in git history.
 
 All exported API is additive; no existing signature or behaviour was removed.
 
+[v0.1.7]: https://github.com/layr8/go-sdk/releases/tag/v0.1.7
 [v0.1.6]: https://github.com/layr8/go-sdk/releases/tag/v0.1.6
