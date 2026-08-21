@@ -231,6 +231,52 @@ layr8.Attachment{
 }
 ```
 
+Attachments you supply are never displaced. The single exception is [identity credentials](#identity-credentials), which are appended to rather than displacing the wallet's selection: they answer a different question.
+
+## Identity credentials
+
+A **grant** says what the sender may do. An **identity credential** says *who the sender is* — that it works for a particular company, holds a licence, is over eighteen. The cloud-node keeps them apart on one test, `credentialSubject.scope`: with a scope it is a grant; without one it is an identity credential and lands in the policy input a grant's `senderCredentials` requirement reads.
+
+Both ride in the same `Attachments` slice with the same `MediaType: "application/vc+jwt"`. `IdentityAttachment` builds the envelope:
+
+```go
+creds, err := client.ListCredentials(ctx)
+if err != nil {
+    return err
+}
+
+att, err := layr8.IdentityAttachment(creds[0].CredentialJWT)
+if err != nil {
+    return err
+}
+
+err = client.Send(ctx, &layr8.Message{
+    To:          []string{peer},
+    Type:        "https://layr8.io/protocols/mcp/1.0/tools-call",
+    Body:        body,
+    Attachments: []layr8.Attachment{att},
+})
+```
+
+Attaching one does **not** cost the message its grants — the wallet's selection is appended after yours.
+
+### You choose, always
+
+The SDK will not pick identity credentials for you, and this is deliberate. The requirement you are trying to satisfy lives in the grant held by the *recipient*; it never reaches you before the call. An SDK selecting automatically would therefore have no criterion to select by, and exactly one implementable behaviour: attach everything you hold. Which claims about you or your organisation a counterparty gets to see is your decision, made per message — not a library default.
+
+### Errors
+
+`IdentityAttachment` returns an error rather than an attachment the far end will misread:
+
+| Argument | Result |
+| --- | --- |
+| Not a compact JWS (three non-empty segments) | `ErrNotCompactJWS`. The node can verify nothing else. |
+| A credential with a non-empty `credentialSubject.scope` | `ErrCredentialIsGrant` — that is a grant. Attached this way it would be routed as one, satisfy no `senderCredentials` requirement, and produce a denial identical to attaching nothing. Let the wallet handle grants. |
+
+Both are matched with `errors.Is`.
+
+An expired or revoked identity credential is **admitted** by the node today: validity is not checked on this input. Do not treat arrival as proof of currency.
+
 ## MCP (tool calling) over DIDComm
 
 Layr8 services expose an MCP surface as DIDComm request/reply. `client.MCP()` removes the boilerplate — the protocol subscription, the type mapping (`tools/call` → `{base}/tools-call`), the JSON-RPC envelope, and unwrapping `result`.

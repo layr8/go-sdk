@@ -611,6 +611,16 @@ func (c *Client) Request(ctx context.Context, msg *Message, opts ...RequestOptio
 // their own has a reason, and silently overriding it would be the second
 // confusing thing to happen to that message.
 //
+// With ONE narrowing, for identity credentials (see identity.go). A message
+// whose caller-supplied attachments are ALL identity credentials still gets the
+// wallet's grants, appended after them. The two answer different questions —
+// "who is the sender" and "what may it do" — and the node routes them to
+// different policy inputs, so a caller who states who it is must not thereby
+// stop stating what it may do. Under the old rule it did, and the denial that
+// followed said "no grant covers this call": the exact misleading message this
+// whole path exists to stop producing. Anything else the caller attaches — a
+// grant, a document, a JSON blob — still displaces the wallet, unchanged.
+//
 // A wallet failure does NOT block the send, which is why this returns nothing.
 // The node is the authority on whether this message needed a grant, and most
 // traffic (discovery, trust-ping, problem reports) needs none; refusing here on
@@ -622,8 +632,15 @@ func (c *Client) Request(ctx context.Context, msg *Message, opts ...RequestOptio
 // Config.GrantReadTimeout, enforced on the request itself, and a lapsed deadline
 // arrives here as an ordinary read error.
 func (c *Client) withGrants(ctx context.Context, msg *Message) {
-	if c.wallet == nil || len(msg.Attachments) > 0 {
+	if c.wallet == nil {
 		return
+	}
+
+	own := msg.Attachments
+	for _, att := range own {
+		if !IsIdentityAttachment(att) {
+			return
+		}
 	}
 
 	attachments, err := c.wallet.attachmentsFor(ctx, msg.From, msg, func(covering, attached int) {
@@ -647,7 +664,9 @@ func (c *Client) withGrants(ctx context.Context, msg *Message) {
 	}
 
 	if len(attachments) > 0 {
-		msg.Attachments = attachments
+		// The caller's entries stay, first and unmodified. The wallet only ever
+		// appends here — own is empty in every case but the identity one.
+		msg.Attachments = append(append(make([]Attachment, 0, len(own)+len(attachments)), own...), attachments...)
 		return
 	}
 
