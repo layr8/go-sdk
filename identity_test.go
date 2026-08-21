@@ -1,6 +1,7 @@
 package layr8
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -153,5 +154,75 @@ func TestIdentity_AnythingThatIsNotACompactJWSIsRefused(t *testing.T) {
 		if _, err := IdentityAttachment(bad); !errors.Is(err, ErrNotCompactJWS) {
 			t.Errorf("IdentityAttachment(%q) err = %v, want ErrNotCompactJWS", bad, err)
 		}
+	}
+}
+
+func TestIdentity_AnUndecodableAttachmentIsNotAnIdentityCredential(t *testing.T) {
+	// Counting three segments is not reading a credential. Each of these has
+	// three of them and decodes to nothing usable, so nothing here can say
+	// whether it carries a credentialSubject.scope.
+	//
+	// "I could not read a scope" must not collapse into "there is no scope, so
+	// this is identity". Identity is the ONE attachment shape that leaves the
+	// wallet running, so that collapse hands a caller who attached garbage the
+	// wallet's grants, appended silently, while every other foreign attachment
+	// stands the wallet aside. The caller chose nothing and got a disclosure.
+	seg := func(raw string) string { return base64.RawURLEncoding.EncodeToString([]byte(raw)) }
+
+	undecodable := []string{
+		"..",
+		"a.b.c",
+		seg("{}") + "." + seg("not json at all") + ".c2ln",
+		// Valid JSON, but a scalar: it parses, and then has no
+		// credentialSubject to read — which looked exactly like a scope-free
+		// credential.
+		seg("{}") + "." + seg("42") + ".c2ln",
+	}
+
+	for _, bad := range undecodable {
+		att := Attachment{MediaType: CredentialMediaType, Data: AttachmentData{JWS: bad}}
+		if IsIdentityAttachment(att) {
+			t.Errorf("IsIdentityAttachment(%q) = true, want false", bad)
+		}
+		if _, err := IdentityAttachment(bad); !errors.Is(err, ErrNotCompactJWS) {
+			t.Errorf("IdentityAttachment(%q) err = %v, want ErrNotCompactJWS", bad, err)
+		}
+	}
+}
+
+func TestIdentity_MixedWithAGrantStillDisplacesTheWallet(t *testing.T) {
+	// The narrowing is "the caller's attachments are ALL identity credentials",
+	// not "at least one of them is". A caller that supplied a grant of its own
+	// has said which grant to use, and the wallet appending its own selection
+	// behind that would be overriding an explicit choice — the same silent
+	// substitution the whole path exists to avoid. Mixing the two is the case
+	// where both rules apply at once, and nothing pinned which one wins.
+	node, wsURL := setupGrantNode(t)
+	node.credentials = []map[string]json.RawMessage{coveringRecord(t)}
+
+	identity, err := IdentityAttachment(identityJWT(t, "urn:uuid:idc-1"))
+	if err != nil {
+		t.Fatalf("IdentityAttachment: %v", err)
+	}
+
+	client, ctx := connectedClient(t, wsURL, Config{})
+	msg := toolCall()
+	msg.Attachments = []Attachment{identity, {
+		ID:        "mine",
+		MediaType: CredentialMediaType,
+		Data:      AttachmentData{JWS: rawJWTOf(t, grantRecord(t, grantOpts{id: "mine", sig: "other"}))},
+	}}
+	if err := client.Send(ctx, msg); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	// Both of the caller's survive, in order, and the wallet adds nothing.
+	atts := sentAttachments(t, node)
+	if len(atts) != 2 {
+		t.Fatalf("attachments = %d, want 2 (only the caller's two)", len(atts))
+	}
+	if atts[0]["id"] != "urn:uuid:idc-1" || atts[1]["id"] != "mine" {
+		t.Errorf("attachments = %v, want the caller's identity credential then its grant", atts)
 	}
 }

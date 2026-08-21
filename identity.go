@@ -71,6 +71,11 @@ func decodeIdentityPayload(jws string) map[string]json.RawMessage {
 	if err != nil {
 		return nil
 	}
+	// nil for everything unreadable, and that includes a payload that is valid
+	// JSON but not an object: a scalar or an array has no credentialSubject to
+	// read, which is indistinguishable downstream from a scope-free credential.
+	// json.Unmarshal into a map rejects both, and leaves the map nil for the
+	// JSON literal null, which it accepts without error.
 	var payload map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return nil
@@ -78,13 +83,44 @@ func decodeIdentityPayload(jws string) map[string]json.RawMessage {
 	return payload
 }
 
-// identityClaims returns the payload, the credentialSubject.scope length, and
-// the credential's own id, as the node reads them.
+// credentialShape is what a compact JWS is, by the same test the node routes on.
+//
+// THREE outcomes, not two. credentialSubject.scope present and non-empty is a
+// grant; absent or empty is an identity credential; a payload that does not
+// decode is NEITHER.
+//
+// The third one is why this is not a bool. A helper that answers "scope length
+// 0" both for a credential that has no scope and for a string it could not
+// decode makes an undecodable attachment indistinguishable from an identity
+// credential. That is not cosmetic: identity credentials are the one caller
+// attachment shape that does NOT stand the wallet aside, so a caller who
+// attached three dots and a shrug would get the wallet's grants appended to its
+// message — a disclosure it never asked for, chosen silently, which is the exact
+// thing the explicit-selection rule exists to forbid. Every other foreign
+// attachment displaces the wallet; something unreadable has to behave like the
+// rest of them, not like the privileged case.
+type credentialShape int
+
+const (
+	// shapeUndecodable is the zero value on purpose: decodeIdentityPayload
+	// returns nil for everything it cannot read, and nil must not be able to
+	// fall through into the identity case by accident.
+	shapeUndecodable credentialShape = iota
+	shapeIdentity
+	shapeGrant
+)
+
+// identityClaims returns the credential's shape and its own id, as the node
+// reads them.
 //
 // Claims are at the TOP LEVEL of the payload on this node; the "vc" wrapper is
 // the standard alternative and both are accepted — same as parseCredential.
-func identityClaims(jws string) (payload map[string]json.RawMessage, scopeLen int, id string) {
-	payload = decodeIdentityPayload(jws)
+func identityClaims(jws string) (shape credentialShape, id string) {
+	payload := decodeIdentityPayload(jws)
+	if payload == nil {
+		return shapeUndecodable, ""
+	}
+
 	vc := payload
 	if wrapped, ok := payload["vc"]; ok {
 		var inner map[string]json.RawMessage
@@ -104,7 +140,10 @@ func identityClaims(jws string) (payload map[string]json.RawMessage, scopeLen in
 	if id == "" {
 		id = firstString(payload, "jti")
 	}
-	return payload, len(subject.Scope), id
+	if len(subject.Scope) > 0 {
+		return shapeGrant, id
+	}
+	return shapeIdentity, id
 }
 
 // IdentityAttachment builds the attachment that carries one identity
@@ -141,8 +180,15 @@ func IdentityAttachment(credentialJWS string) (Attachment, error) {
 			"%w: expected three non-empty dot-separated segments", ErrNotCompactJWS)
 	}
 
-	_, scopeLen, id := identityClaims(credentialJWS)
-	if scopeLen > 0 {
+	shape, id := identityClaims(credentialJWS)
+	if shape == shapeUndecodable {
+		return Attachment{}, fmt.Errorf(
+			"%w: three segments is not the same as three READABLE segments. The payload "+
+				"segment must be base64url-encoded JSON object; one that does not decode says "+
+				"nothing about credentialSubject.scope, so nothing here can show it to be an "+
+				"identity credential rather than a grant", ErrNotCompactJWS)
+	}
+	if shape == shapeGrant {
 		return Attachment{}, fmt.Errorf(
 			"%w: the node would route it to the policy's \"credentials\" input and it would "+
 				"never satisfy a senderCredentials requirement. Let the wallet attach grants, "+
@@ -174,6 +220,10 @@ func IdentityAttachment(credentialJWS string) (Attachment, error) {
 // Used by withGrants to decide whether caller-supplied attachments should still
 // displace the wallet. Nothing here trusts how the attachment was built: a
 // hand-assembled one counts exactly the same.
+//
+// False for an attachment whose JWS does not decode, as well as for one that
+// carries a scope. Only a credential this can actually READ as scope-free is an
+// identity credential; see credentialShape.
 func IsIdentityAttachment(att Attachment) bool {
 	if att.MediaType != CredentialMediaType {
 		return false
@@ -182,6 +232,6 @@ func IsIdentityAttachment(att Attachment) bool {
 	if !ok || len(strings.Split(jws, ".")) != 3 {
 		return false
 	}
-	_, scopeLen, _ := identityClaims(jws)
-	return scopeLen == 0
+	shape, _ := identityClaims(jws)
+	return shape == shapeIdentity
 }
