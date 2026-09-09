@@ -32,7 +32,53 @@ type Config struct {
 	// stable key material for cross-node DIDComm (e.g., services
 	// that send messages to agents on other nodes).
 	// Default: false (ephemeral storage).
+	//
+	// A join that names a ParentDID must NOT be persistent: the node
+	// refuses that combination with e.join.plugin.child.storage-not-ephemeral.
+	// Only a temporary identity may borrow authority; a persistent one is
+	// granted its own roles and grants instead.
 	Persistent bool
+
+	// ParentDID names the identity whose authority this DID borrows.
+	// Optional; omitting it is the behaviour that existed before this
+	// field, byte for byte on the wire.
+	//
+	// The node REFUSES a join whose parent is not a persistent identity it
+	// hosts, with e.join.plugin.parent.not-persistent,
+	// e.join.plugin.parent.not-found or
+	// e.join.plugin.parent.not-hosted-here. An ephemeral DID is deleted
+	// once its holder has been disconnected for the node's TTL, so a parent
+	// that can be swept away would leave a child that nobody can withdraw
+	// and nobody can keep.
+	//
+	// Naming an accepted parent causes the node to sign one credential for
+	// this DID per grant that parent holds, and to return them in the join
+	// reply (Client.DelegatedCredentials). There is NOTHING to select:
+	// everything the parent holds is delegated. That is why there is no
+	// companion field naming a role — a node refuses a join that carries
+	// one rather than ignoring it.
+	//
+	// The DID that names a parent must be named BENEATH it —
+	// <ParentDID>:<segment> — and the node refuses one that is not, with
+	// e.join.plugin.child.not-beneath-parent. Leave AgentDID empty and this
+	// SDK generates a conforming name; see borrowed_did.go for the rule and
+	// why the shape is fixed.
+	ParentDID string
+
+	// childNameSource records who chose the segment of this DID's name:
+	// "sdk" when this library generated it, "client" when the caller
+	// supplied the whole DID, and "" when neither applies.
+	//
+	// Unexported: it is settled by resolveConfig and there is no reason for
+	// a caller to set it. It is on the wire because a generated name and a
+	// hand-built one that conforms are otherwise identical bytes, and the
+	// node's log would then be unable to say whether a malformed borrower
+	// DID came from this library or from a caller.
+	//
+	// "" is NOT STATED — an older client, or a join naming no parent at
+	// all. It is never read as "client", which would claim a caller chose a
+	// name when nothing measured that.
+	childNameSource ChildNameSource
 
 	// Protocols lists additional protocol URIs to advertise on join.
 	// Use this for sender-only actors that need to declare protocols
@@ -164,6 +210,19 @@ func resolveConfig(cfg Config) (Config, error) {
 	if cfg.APIKey == "" {
 		return cfg, fmt.Errorf("APIKey is required (set in Config or LAYR8_API_KEY env)")
 	}
+
+	// A DID that names a parent has to be named beneath it. Settled HERE
+	// rather than at join time, so that AgentDID — which the wallet, the From
+	// of every outbound message and Client.DID all read — is the DID the join
+	// actually uses. Deriving it later would leave those reading an empty
+	// string while the socket spoke as somebody. Settled ONCE, so a reconnect
+	// returns under the same DID and the node re-mints its credentials for it.
+	borrower, err := resolveBorrowerDID(cfg.AgentDID, cfg.ParentDID)
+	if err != nil {
+		return cfg, err
+	}
+	cfg.AgentDID = borrower.did
+	cfg.childNameSource = borrower.nameSource
 
 	if cfg.AttachGrants == nil {
 		attach := envBool("LAYR8_ATTACH_GRANTS", true)

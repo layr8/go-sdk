@@ -6,19 +6,85 @@ This file starts here. Earlier releases are recorded only in git history.
 
 ## [Unreleased]
 
-### Fixed
+### Added
 
-- **An attachment field this SDK could not read no longer swallows the whole
-  message.** A cloud-node's `e.m.authz.denied` problem report carries a
-  `helix-decision` attachment whose `lastmod_time` is an ISO-8601 string; this
-  SDK typed the field as `int64`, so decoding failed for the entire message and
-  the caller was handed `ErrParseFailure` instead of the denial. Being denied
-  and hearing nothing are not the same event, and the SDK reported the wrong
-  one.
-- `attachments` are now decoded in a second pass. A header this SDK cannot read
-  leaves `Message.Attachments` nil and sets the new `Message.AttachmentsUnread`
-  to say so, and the message is still delivered. "No attachments" and
-  "attachments not read" are different facts and now have different values.
+- **A join can name the parent whose authority its DID borrows, and this SDK
+  derives the name.** `Config.ParentDID` is optional and is sent only when set,
+  so a join that names no parent puts exactly the payload on the wire it did
+  before — asserted byte for byte in `borrowed_did_test.go`. Pass `ParentDID`
+  and leave `AgentDID` empty, and the client joins as `<ParentDID>:<segment>`:
+  twelve characters of Crockford base32 from a cryptographic source, generated
+  once when the configuration is resolved, so a reconnect returns under the same
+  DID and the node re-mints the same credentials for it.
+
+  **The reason the shape is fixed:** a cloud-node API key restricts which DIDs
+  it may bind, and an entry is either an exact DID or a prefix with a trailing
+  `*`. While a borrower's name was unrelated to its parent — and generated per
+  connection — no entry could be written for it in advance, so the only key that
+  admitted a borrower was one with *no restrictions at all*, which admits every
+  DID on the node. Named beneath its parent, one key carrying the parent and
+  `DIDNamespaceOf(parent)` admits the parent and its borrowers and nothing else.
+
+  A caller that supplies its own `AgentDID` that is **not** named beneath the
+  parent gets a `*NotBeneathParentError` from `NewClient`, before anything is
+  written: the node refuses that join with
+  `e.join.plugin.child.not-beneath-parent`, and a refusal at connect time in
+  production is the expensive way to learn this.
+
+  New exports: `ParentDID`, `DIDNamespaceOf`, `IsBeneathParent`,
+  `RandomChildSegment`, `ChildSegmentLength`, `ChildNameSource`,
+  `NotBeneathParentError`.
+
+  `did_spec.childNameSource` is sent alongside `parentDid` — `"sdk"` when this
+  library generated the segment, `"client"` when the caller supplied the whole
+  DID, and the key is **absent** when neither applies. A generated name and a
+  hand-built one that conforms are otherwise identical bytes, so without it a
+  malformed borrower DID could not be told apart as this library's defect from a
+  caller's typo. The absent case is never folded into `"client"`.
+
+  Only a temporary identity may borrow: the node refuses a join that names a
+  parent and declares persistent storage with
+  `e.join.plugin.child.storage-not-ephemeral`, so `ParentDID` and
+  `Persistent: true` do not go together. This SDK already defaults to ephemeral
+  storage, so naming a parent needs no other change.
+
+- **The join reply carries the credentials the node signed for this DID.**
+  `Client.DelegatedCredentials()` returns a `*DelegatedCredentialsReading` —
+  `{Status, Credentials}` — with one entry per grant the named parent holds. The
+  node signs them at join, narrowed to no more than the parent carries and
+  citing it in `credentialSubject.delegation.parentCapability`. When
+  `AttachGrants` is on they are attached to outbound messages automatically;
+  there is nothing to wire up.
+
+  **Four readings from this method, and six with
+  `Client.SupportsEphemeralDelegation()`. Collapsing any pair reports something
+  nobody measured.**
+
+  | `DelegatedCredentials()` | `SupportsEphemeralDelegation()` | Meaning |
+  |---|---|---|
+  | `nil` | `true` | the join named no parent |
+  | `{complete, []}` | `true` | the parent's wallet was **read** and it grants nothing |
+  | `{complete, [...]}` | `true` | read, and here is all of it |
+  | `{partial, [...]}` | `true` | read, and some of it could not be delegated — there is more you did not get |
+  | `{unread, []}` | `true` | the wallet could **not** be read; the `[]` measures nothing |
+  | `nil` | `false` | the node never looked |
+
+  Anything that is not a well-formed reading — absent, a bare array from an
+  older node, an unknown status — is `nil`, never an empty `complete` one: that
+  would state that a wallet was read and grants nothing, which is the one thing
+  none of those inputs says.
+
+  A reading arrives on **every** join and rejoin, including one that carries no
+  reading at all — that clears whatever the previous join seeded, because the
+  node mints a fresh set per join and the previous set names a DID document a
+  rejoin may have replaced.
+
+  **The credential exists nowhere but the join reply.** The node stores nothing
+  about it, so `GET /api/v1/credentials` will never return it and no endpoint
+  will hand it back; rejoin to be issued a new one. It is not individually
+  revocable — authority is withdrawn by revoking or expiring the parent's grant.
+  Because that endpoint is not their source, a failed read of it no longer
+  withholds them from a message that they cover.
 
 ### Changed
 
@@ -35,6 +101,20 @@ This file starts here. Earlier releases are recorded only in git history.
 - Outbound `lastmod_time` is emitted as an integer, which is what both DIF
   reference implementations (`didcomm-rust`, `didcomm-python`) expect. A value
   this SDK read but did not author is re-emitted unchanged.
+
+### Fixed
+
+- **An attachment field this SDK could not read no longer swallows the whole
+  message.** A cloud-node's `e.m.authz.denied` problem report carries a
+  `helix-decision` attachment whose `lastmod_time` is an ISO-8601 string; this
+  SDK typed the field as `int64`, so decoding failed for the entire message and
+  the caller was handed `ErrParseFailure` instead of the denial. Being denied
+  and hearing nothing are not the same event, and the SDK reported the wrong
+  one.
+- `attachments` are now decoded in a second pass. A header this SDK cannot read
+  leaves `Message.Attachments` nil and sets the new `Message.AttachmentsUnread`
+  to say so, and the message is still delivered. "No attachments" and
+  "attachments not read" are different facts and now have different values.
 
 ## [v0.1.7] - 2026-08-21
 

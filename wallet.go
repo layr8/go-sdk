@@ -451,7 +451,17 @@ type wallet struct {
 
 	mu    sync.Mutex
 	cache map[string]walletEntry
-	now   func() time.Time // injectable for tests
+	// delivered holds the credentials handed to a DID in its join reply,
+	// which exist NOWHERE ELSE.
+	//
+	// An ephemeral DID's delegated credentials are not stored on the node —
+	// that is the point of them — so GET /api/v1/credentials returns nothing
+	// for such a DID, forever. Held apart from cache for two reasons that both
+	// matter: they must not lapse on a TTL that exists to re-read a source
+	// that will never have them, and they must survive a failed read of that
+	// source.
+	delivered map[string][]HeldCredential
+	now       func() time.Time // injectable for tests
 }
 
 func newWallet(read credentialReader, ttl, readTimeout time.Duration) *wallet {
@@ -468,8 +478,60 @@ func newWallet(read credentialReader, ttl, readTimeout time.Duration) *wallet {
 		readTimeout: readTimeout,
 		failureTTL:  failureTTL,
 		cache:       make(map[string]walletEntry),
+		delivered:   make(map[string][]HeldCredential),
 		now:         time.Now,
 	}
+}
+
+// seedDelivered records what a join reply handed to did, REPLACING anything
+// held before.
+//
+// Replacing, not merging: the node mints a fresh set on every join, and the
+// previous set names credentials issued to a DID document that a rejoin may
+// have replaced. Keeping both would put dead credentials on the wire and make
+// the live one's slot under maxAttached a matter of ordering.
+//
+// "A fresh set on every join" only holds if something calls this (or
+// forgetDelivered) on every join. Client.applyDelegated is that something, and
+// it runs even when the reply carried no reading — which is precisely when the
+// previous set is most likely to be wrong.
+//
+// An entry that does not parse as a grant is dropped here rather than at send
+// time, exactly as one read over REST is.
+func (w *wallet) seedDelivered(did string, records []DelegatedCredential) {
+	var creds []HeldCredential
+	for _, rec := range records {
+		jwt, err := json.Marshal(rec.CredentialJWT)
+		if err != nil {
+			continue
+		}
+		if cred, ok := parseCredential(map[string]json.RawMessage{"credential_jwt": jwt}); ok {
+			creds = append(creds, cred)
+		}
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(creds) == 0 {
+		delete(w.delivered, did)
+		return
+	}
+	w.delivered[did] = creds
+}
+
+// forgetDelivered drops what was delivered to did — called on a join whose
+// reply carried no reading at all.
+func (w *wallet) forgetDelivered(did string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	delete(w.delivered, did)
+}
+
+// deliveredTo returns the credentials a join reply handed to did.
+func (w *wallet) deliveredTo(did string) []HeldCredential {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.delivered[did]
 }
 
 // refresh drops the cached grants for did (or all, when did is empty), forcing
@@ -529,10 +591,24 @@ func (w *wallet) heldBy(ctx context.Context, did string) ([]HeldCredential, erro
 // attachmentsFor returns the attachments for one outbound message, or nil if
 // nothing covers it.
 func (w *wallet) attachmentsFor(ctx context.Context, did string, msg *Message, onCapped func(covering, attached int)) ([]Attachment, error) {
+	delivered := w.deliveredTo(did)
+
+	// A failed read is still announced to the caller — via the error — when it
+	// is the only source this DID has. When the join reply already handed us
+	// credentials, it is not: they exist independently of the node's credential
+	// endpoint, and dropping them because an unrelated read failed would
+	// withhold authority the node would have honoured.
 	creds, err := w.heldBy(ctx, did)
 	if err != nil {
-		return nil, err
+		if len(delivered) == 0 {
+			return nil, err
+		}
+		creds = nil
 	}
+	if len(delivered) > 0 {
+		creds = append(append([]HeldCredential{}, delivered...), creds...)
+	}
+
 	return selectGrants(creds, grantSelection{
 		Recipients: msg.To,
 		TypeURI:    msg.Type,

@@ -145,9 +145,22 @@ type phoenixChannel struct {
 	msgHandler   func(payload []byte)
 	disconnectFn func(error)
 	reconnectFn  func()
+	delegatedFn  func(did string, reading *DelegatedCredentialsReading)
 
 	assignedDIDVal    string
 	replyProtocolMode bool // true if server supports reply_protocol/1
+
+	// parentDID and childNameSource are sent inside did_spec only when set,
+	// so a join that names no parent puts exactly the payload on the wire it
+	// put there before these fields existed. See borrowed_did.go.
+	parentDID       string
+	childNameSource ChildNameSource
+
+	// delegated is nil until a join reply that names a parent arrives. Nil is
+	// its own reading — "no reading" — and is never coerced into an empty
+	// complete one. See DelegatedCredentialsReading.
+	delegated           *DelegatedCredentialsReading
+	ephemeralDelegation bool // true if server supports ephemeral_delegation/1
 
 	done chan struct{}
 
@@ -270,19 +283,33 @@ func (c *phoenixChannel) join(ctx context.Context, protocols []string) error {
 		storage = "persistent"
 	}
 
+	didSpec := map[string]interface{}{
+		"mode":    "Create",
+		"storage": storage,
+		"type":    "plugin",
+		"verificationMethods": []map[string]string{
+			{"purpose": "authentication"},
+			{"purpose": "assertionMethod"},
+			{"purpose": "keyAgreement"},
+		},
+	}
+	// Sent only when set, so a join that names no parent is byte for byte the
+	// payload this SDK sent before the field existed.
+	if c.parentDID != "" {
+		didSpec["parentDid"] = c.parentDID
+	}
+	// Sent only when a parent was named and somebody therefore chose a
+	// borrower's name. An empty value is not sent at all, so "this client does
+	// not report it" stays a third answer rather than becoming "the caller
+	// chose it".
+	if c.childNameSource != "" {
+		didSpec["childNameSource"] = string(c.childNameSource)
+	}
+
 	joinParams := map[string]interface{}{
 		"payload_types":  protocols,
 		"reply_protocol": true,
-		"did_spec": map[string]interface{}{
-			"mode":    "Create",
-			"storage": storage,
-			"type":    "plugin",
-			"verificationMethods": []map[string]string{
-				{"purpose": "authentication"},
-				{"purpose": "assertionMethod"},
-				{"purpose": "keyAgreement"},
-			},
-		},
+		"did_spec":       didSpec,
 	}
 
 	payload, _ := json.Marshal(joinParams)
@@ -311,9 +338,10 @@ func (c *phoenixChannel) join(ctx context.Context, protocols []string) error {
 		var reply struct {
 			Status   string `json:"status"`
 			Response struct {
-				DID          string   `json:"did"`
-				Reason       string   `json:"reason"`
-				Capabilities []string `json:"capabilities"`
+				DID                  string          `json:"did"`
+				Reason               string          `json:"reason"`
+				Capabilities         []string        `json:"capabilities"`
+				DelegatedCredentials json.RawMessage `json:"delegated_credentials"`
 			} `json:"response"`
 		}
 		json.Unmarshal(payload, &reply)
@@ -328,6 +356,23 @@ func (c *phoenixChannel) join(ctx context.Context, protocols []string) error {
 			c.assignedDIDVal = reply.Response.DID
 		}
 		c.replyProtocolMode = hasCapability(reply.Response.Capabilities, "reply_protocol/1")
+		c.ephemeralDelegation = hasCapability(reply.Response.Capabilities, "ephemeral_delegation/1")
+
+		// The node omits the key when the join named no parent, and otherwise
+		// sends a reading that says whether it could read the parent's wallet
+		// at all. Only a well-formed reading is a reading; treating anything
+		// else as an empty complete one would state that a wallet was read and
+		// grants nothing, which none of those inputs says.
+		c.delegated = parseDelegatedCredentials(reply.Response.DelegatedCredentials)
+		// UNCONDITIONAL, nil included. A rejoin whose reply carries no reading
+		// is a rejoin after which the previous set must go: it was minted for a
+		// DID document this rejoin may have replaced, and the node that would
+		// have re-minted it did not. Firing only when there is something to
+		// hand over leaves the wallet attaching the last join's credentials
+		// while delegatedCredentials() reports there are none.
+		if c.delegatedFn != nil {
+			c.delegatedFn(c.effectiveDID(), c.delegated)
+		}
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
@@ -390,6 +435,42 @@ func (c *phoenixChannel) onReconnect(fn func()) {
 
 func (c *phoenixChannel) assignedDID() string {
 	return c.assignedDIDVal
+}
+
+// effectiveDID is the DID this channel speaks as: the one the caller supplied,
+// or the one the node assigned when the caller supplied none.
+func (c *phoenixChannel) effectiveDID() string {
+	if c.agentDID != "" {
+		return c.agentDID
+	}
+	return c.assignedDIDVal
+}
+
+// setBorrower records the parent whose authority this channel's DID borrows,
+// and who chose the borrower's name. Both are sent inside did_spec only when
+// set.
+func (c *phoenixChannel) setBorrower(parentDID string, source ChildNameSource) {
+	c.parentDID = parentDID
+	c.childNameSource = source
+}
+
+// onDelegatedCredentials registers a callback that fires after EVERY
+// successful join and rejoin, with the reading the node returned or nil when
+// it returned none.
+func (c *phoenixChannel) onDelegatedCredentials(fn func(did string, reading *DelegatedCredentialsReading)) {
+	c.delegatedFn = fn
+}
+
+// delegatedCredentials reports what this join learned about the parent's
+// wallet. See Client.DelegatedCredentials.
+func (c *phoenixChannel) delegatedCredentials() *DelegatedCredentialsReading {
+	return c.delegated
+}
+
+// supportsEphemeralDelegation reports whether the node advertised
+// ephemeral_delegation/1 at join.
+func (c *phoenixChannel) supportsEphemeralDelegation() bool {
+	return c.ephemeralDelegation
 }
 
 func (c *phoenixChannel) replyMode() bool {
