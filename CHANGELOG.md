@@ -4,6 +4,38 @@ All notable changes to `github.com/layr8/go-sdk`. Format loosely follows [Keep a
 
 This file starts here. Earlier releases are recorded only in git history.
 
+## [Unreleased]
+
+### Fixed
+
+- **An attachment field this SDK could not read no longer swallows the whole
+  message.** A cloud-node's `e.m.authz.denied` problem report carries a
+  `helix-decision` attachment whose `lastmod_time` is an ISO-8601 string; this
+  SDK typed the field as `int64`, so decoding failed for the entire message and
+  the caller was handed `ErrParseFailure` instead of the denial. Being denied
+  and hearing nothing are not the same event, and the SDK reported the wrong
+  one.
+- `attachments` are now decoded in a second pass. A header this SDK cannot read
+  leaves `Message.Attachments` nil and sets the new `Message.AttachmentsUnread`
+  to say so, and the message is still delivered. "No attachments" and
+  "attachments not read" are different facts and now have different values.
+
+### Changed
+
+- **Breaking:** `Attachment.LastmodTime` is now `*AttachmentTime` instead of
+  `int64`. DIDComm v2 states no type for `lastmod_time` — only "a hint about
+  when the content in this attachment was last modified" — while pinning
+  `created_time`/`expires_time` to integer UTC epoch seconds in the same
+  document. Integers and RFC 3339 strings are both read; anything else is
+  recorded as unread rather than rejected. The three cases are three values:
+  a nil pointer (absent), `Known == true` with `Seconds` (read), and
+  `Known == false` with `Raw` (not read). Callers that read the old `int64`
+  should call `Time()` or check `Known`; callers that set it should use
+  `NewAttachmentTime(t)`.
+- Outbound `lastmod_time` is emitted as an integer, which is what both DIF
+  reference implementations (`didcomm-rust`, `didcomm-python`) expect. A value
+  this SDK read but did not author is re-emitted unchanged.
+
 ## [v0.1.7] - 2026-08-21
 
 ### Added
