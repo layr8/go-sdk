@@ -44,4 +44,20 @@ type transport interface {
 	// replyMode returns true if the server supports the reply protocol.
 	// When true, the client sends dispatch_reply events instead of acks.
 	replyMode() bool
+
+	// setBorrower records the parent whose authority this connection's DID
+	// borrows, and who chose the borrower's name.
+	setBorrower(parentDID string, source ChildNameSource)
+
+	// onDelegatedCredentials registers a callback that fires after EVERY
+	// successful join and rejoin, with the reading the node returned or nil.
+	onDelegatedCredentials(fn func(did string, reading *DelegatedCredentialsReading))
+
+	// delegatedCredentials reports what the last join learned about the
+	// parent's wallet, or nil when it learned nothing.
+	delegatedCredentials() *DelegatedCredentialsReading
+
+	// supportsEphemeralDelegation reports whether the node advertised
+	// ephemeral_delegation/1 at join.
+	supportsEphemeralDelegation() bool
 }

@@ -133,6 +133,74 @@ func (c *Client) MCP(base ...string) (*MCPBinding, error) {
 	return &MCPBinding{client: c, base: b}, nil
 }
 
+// DelegatedCredentials reports what the last join learned about the parent's
+// wallet, and what came back.
+//
+// FOUR readings from this method alone, and with SupportsEphemeralDelegation
+// six — they are deliberately not two. Collapsing any pair reports something
+// nobody measured:
+//
+//	nil, supported            — this join named no parent, so nothing was delegated
+//	{complete, []}            — the parent's wallet was READ and it holds no grants
+//	{complete, [...]}         — read, and here is all of it
+//	{partial,  [...]}         — read, and some of it could not be delegated
+//	{unread,   []}            — the wallet could NOT be read; the [] measures nothing
+//	nil, NOT supported        — the node predates delegation; it never looked
+//
+// Do not write reading.Credentials without reading Status: that turns four of
+// those rows into the second, and the second is the only one of them that is a
+// measurement.
+//
+// A fresh reading replaces the old one on every rejoin, because the node mints
+// a fresh set per join — including a rejoin that comes back with no reading at
+// all, which clears it.
+//
+// The credentials are attached to outbound messages automatically when
+// AttachGrants is on; there is nothing to wire up.
+func (c *Client) DelegatedCredentials() *DelegatedCredentialsReading {
+	c.mu.Lock()
+	t := c.transport
+	c.mu.Unlock()
+	if t == nil {
+		return nil
+	}
+	return t.delegatedCredentials()
+}
+
+// SupportsEphemeralDelegation reports whether the node advertised
+// ephemeral_delegation/1 at join. Without it, a nil DelegatedCredentials means
+// the node never looked — not that the parent holds nothing.
+func (c *Client) SupportsEphemeralDelegation() bool {
+	c.mu.Lock()
+	t := c.transport
+	c.mu.Unlock()
+	if t == nil {
+		return false
+	}
+	return t.supportsEphemeralDelegation()
+}
+
+// applyDelegated hands a join reply's credentials to the wallet, or clears
+// what a previous join left there.
+//
+// It runs on EVERY join and rejoin, nil reading included. That is what makes
+// "a fresh set on every join" true: the node mints a new set per join, and the
+// previous set names credentials issued to a DID document a rejoin may have
+// replaced.
+func (c *Client) applyDelegated(did string, reading *DelegatedCredentialsReading) {
+	if c.wallet == nil {
+		return
+	}
+	if did == "" {
+		did = c.agentDID
+	}
+	if reading == nil {
+		c.wallet.forgetDelivered(did)
+		return
+	}
+	c.wallet.seedDelivered(did, reading.Credentials)
+}
+
 // RefreshGrants forgets the cached Verifiable Grants for did (empty means this
 // agent's), so the next message re-reads them.
 //
@@ -195,6 +263,8 @@ func (c *Client) Connect(ctx context.Context) error {
 	protocols := c.registry.payloadTypes(c.cfg.Protocols...)
 
 	ch := newPhoenixChannel(c.cfg.NodeURL, c.cfg.APIKey, c.cfg.AgentDID, c.cfg.Persistent, c.cfg.DialContext)
+	ch.setBorrower(c.cfg.ParentDID, c.cfg.childNameSource)
+	ch.onDelegatedCredentials(c.applyDelegated)
 
 	// Wire up message handler
 	ch.setMessageHandler(c.handleInboundMessage)

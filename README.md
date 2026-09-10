@@ -69,7 +69,8 @@ Configuration can be set explicitly or via environment variables (used as fallba
 | `NodeURL` | `LAYR8_NODE_URL` | Yes | WebSocket URL of the cloud-node |
 | `APIKey` | `LAYR8_API_KEY` | Yes | API key for authentication |
 | `AgentDID` | `LAYR8_AGENT_DID` | Yes | Agent DID identity |
-| `Persistent` | -- | No | Persist DID keys across node restarts |
+| `Persistent` | -- | No | Persist DID keys across node restarts. Never together with `ParentDID` |
+| `ParentDID` | -- | No | The identity whose authority this DID borrows — see [Borrowing a parent's authority](#borrowing-a-parents-authority) |
 | `Protocols` | -- | No | Additional protocol URIs to advertise on join (for sender-only actors) |
 | `AttachGrants` | `LAYR8_ATTACH_GRANTS` | No | Attach Verifiable Grants to outbound messages. Default on |
 | `GrantCacheTTL` | `LAYR8_GRANT_CACHE_MS` | No | How long held grants are cached. Default 60s |
@@ -361,6 +362,66 @@ verified, err := client.VerifyPresentation(ctx, signedPres)
 Sign options: `WithPresentationHolderDID(did)`, `WithPresentationFormat(format)`, `WithNonce(nonce)`. Verify options: `WithPresentationVerifierDID(did)`.
 
 ## Connection Lifecycle
+
+## Borrowing a parent's authority
+
+A join can name the identity whose authority its DID borrows. Set `ParentDID`
+and leave `AgentDID` empty, and the client joins as `<ParentDID>:<segment>` —
+twelve characters of Crockford base32, generated once when the configuration is
+resolved, so a reconnect returns under the same DID.
+
+```go
+client, err := layr8.NewClient(layr8.Config{
+    NodeURL:   "wss://node.example.com/plugin_socket/websocket",
+    APIKey:    apiKey,
+    ParentDID: "did:web:acme.example:users:alice",
+}, onError)
+```
+
+The node signs one credential for this DID per grant that parent holds and
+returns them in the join reply. There is nothing to select — everything the
+parent holds is delegated — and when `AttachGrants` is on they are attached to
+outbound messages automatically.
+
+**The DID must be named beneath its parent**, exactly one further segment. Pass
+your own `AgentDID` that is not, and the client returns a
+`*NotBeneathParentError` from `NewClient` rather than writing a join the node
+would refuse. `DIDNamespaceOf(parent)` returns the one API-key entry that
+admits every DID which may borrow from that parent.
+
+**Only a temporary identity may borrow.** The node refuses a join that names a
+parent and declares persistent storage, so do not combine `ParentDID` with
+`Persistent: true`. The parent itself must be a persistent identity hosted by
+that node.
+
+**Read the status before the credentials.** `client.DelegatedCredentials()`
+returns a reading, not a list, and the four answers it can give are four
+different things:
+
+| Reading | Meaning |
+|---|---|
+| `nil`, `SupportsEphemeralDelegation()` true | This join named no parent |
+| `{Status: "complete", Credentials: []}` | The parent's wallet was **read** and it holds no grants |
+| `{Status: "complete", Credentials: [...]}` | Read, and here is all of it |
+| `{Status: "partial", Credentials: [...]}` | Read, and some of it could **not** be delegated — there is more you did not get |
+| `{Status: "unread", Credentials: []}` | The wallet could **not** be read; the empty list measures nothing |
+| `nil`, `SupportsEphemeralDelegation()` false | The node predates delegation — it never looked |
+
+Reaching for `Credentials` without reading `Status` turns four of those rows
+into the second, and the second is the only one that is a measurement.
+
+**The credential exists nowhere but the join reply.** The node stores nothing
+about it, so no endpoint will hand it back; rejoin to be issued a new one. It
+is not individually revocable — authority is withdrawn by revoking or expiring
+the parent's grant.
+
+A refused join names its reason: `e.join.plugin.parent.not-persistent`,
+`e.join.plugin.parent.not-found`, `e.join.plugin.parent.not-hosted-here`,
+`e.join.plugin.child.not-beneath-parent`,
+`e.join.plugin.child.storage-not-ephemeral`,
+`e.join.plugin.child.already-persistent`. The node's reason names the code,
+and reaches the caller as the `Reason` of the `*ConnectionError` that `Connect`
+returns — this SDK does not swallow or rewrite it.
 
 **Agent DID:** `AgentDID` is required — it's the DID your agent connects as and the address other agents use to reach it. Set it via `Config` or the `LAYR8_AGENT_DID` env var; read it back at runtime with `client.DID()`. Set `Persistent: true` to persist the DID's keys across node restarts.
 
