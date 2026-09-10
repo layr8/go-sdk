@@ -169,6 +169,57 @@ Thread correlation is automatic. Use `WithParentThread(pthid)` for nested conver
 
 Decode inbound message bodies with `msg.UnmarshalBody(&target)`. Inbound `Context` includes `Recipient` (string), `Authorized` (bool), and `SenderCredentials` (`[]SenderCredential`).
 
+#### Attachments
+
+`Attachments` is nil when the message carried none — and also when it carried
+an `attachments` header this SDK could not decode. `AttachmentsUnread` is what
+tells those apart, and it is non-nil only in the second case. The message is
+delivered either way: a denial must not disappear because a hint travelling
+beside it was malformed.
+
+```go
+if msg.AttachmentsUnread != nil {
+    log.Printf("attachments not read: %v", msg.AttachmentsUnread)
+}
+```
+
+**Breaking in v0.2.0: `Attachment.LastmodTime` is `*AttachmentTime`, not
+`int64`.** DIDComm v2 pins `created_time` and `expires_time` to integer UTC
+epoch seconds and states no type at all for `lastmod_time` — only that it is "a
+hint about when the content in this attachment was last modified". Integers and
+RFC 3339 strings both arrive in practice, and both are read; anything else is
+recorded as unread rather than failing the whole message.
+
+Three cases, three values, and folding any pair of them together states
+something nobody measured:
+
+| Value | Meaning |
+|---|---|
+| `nil` | The field was absent |
+| `Known == true` | Read — `Seconds` is UTC epoch seconds |
+| `Known == false` | **Not** read — `Raw` is the JSON that arrived |
+
+**What a caller on v0.1.x has to change.** Reading the old `int64` becomes
+`Time()` or a `Known` check; writing it becomes `NewAttachmentTime`:
+
+```go
+// before: ts := att.LastmodTime
+if t, ok := att.LastmodTime.Time(); ok {
+    // ts read off the wire
+    _ = t
+}
+
+// before: att.LastmodTime = time.Now().Unix()
+att.LastmodTime = layr8.NewAttachmentTime(time.Now())
+```
+
+`Time()` is nil-safe, so an absent field and an unread one both return
+`ok == false`; check `LastmodTime == nil` when you need to tell them apart.
+Outbound values are emitted as an integer, which is what both DIF reference
+implementations expect — a string that arrived and was read is normalized to
+seconds on the way out. Only a value that was **not** read is re-emitted byte
+for byte.
+
 ## Durable Handlers
 
 Use `WithManualAck()` to acknowledge messages only after successful processing. Unacknowledged messages are redelivered by the cloud-node.

@@ -51,9 +51,10 @@ type AttachmentTime struct {
 	Seconds int64
 	// Known reports whether Seconds was actually read off the wire.
 	Known bool
-	// Raw is the value exactly as it arrived. It is retained even when the
-	// value was read, so a re-marshal of a message this SDK did not author
-	// does not silently rewrite what a peer sent.
+	// Raw is the value exactly as it arrived, retained whether or not it was
+	// read. MarshalJSON re-emits it for a value that was NOT read, so relaying
+	// a peer's message never rewrites a field nobody decoded; a value that WAS
+	// read is re-emitted as epoch seconds.
 	Raw json.RawMessage
 }
 
