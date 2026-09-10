@@ -6,6 +6,8 @@ This file starts here. Earlier releases are recorded only in git history.
 
 ## [Unreleased]
 
+## [v0.2.0] - 2026-09-10
+
 ### Added
 
 - **A join can name the parent whose authority its DID borrows, and this SDK
@@ -99,8 +101,10 @@ This file starts here. Earlier releases are recorded only in git history.
   should call `Time()` or check `Known`; callers that set it should use
   `NewAttachmentTime(t)`.
 - Outbound `lastmod_time` is emitted as an integer, which is what both DIF
-  reference implementations (`didcomm-rust`, `didcomm-python`) expect. A value
-  this SDK read but did not author is re-emitted unchanged.
+  reference implementations (`didcomm-rust`, `didcomm-python`) expect — a value
+  that arrived as an RFC 3339 string and was read is normalized to seconds on
+  the way out. Only a value this SDK could **not** read is re-emitted byte for
+  byte, so relaying a message never rewrites a field nobody decoded.
 
 ### Fixed
 
@@ -207,5 +211,6 @@ This file starts here. Earlier releases are recorded only in git history.
 
 All exported API is additive; no existing signature or behaviour was removed.
 
+[v0.2.0]: https://github.com/layr8/go-sdk/releases/tag/v0.2.0
 [v0.1.7]: https://github.com/layr8/go-sdk/releases/tag/v0.1.7
 [v0.1.6]: https://github.com/layr8/go-sdk/releases/tag/v0.1.6
