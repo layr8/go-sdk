@@ -1,23 +1,149 @@
 package layr8
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"time"
 
 	"github.com/google/uuid"
 )
 
 // Attachment represents a DIDComm v2 attachment (spec section 5).
 type Attachment struct {
-	ID          string         `json:"id,omitempty"`
-	Description string         `json:"description,omitempty"`
-	Filename    string         `json:"filename,omitempty"`
-	MediaType   string         `json:"media_type,omitempty"`
-	Format      string         `json:"format,omitempty"`
-	LastmodTime int64          `json:"lastmod_time,omitempty"`
-	ByteCount   int64          `json:"byte_count,omitempty"`
-	Data        AttachmentData `json:"data"`
+	ID          string          `json:"id,omitempty"`
+	Description string          `json:"description,omitempty"`
+	Filename    string          `json:"filename,omitempty"`
+	MediaType   string          `json:"media_type,omitempty"`
+	Format      string          `json:"format,omitempty"`
+	LastmodTime *AttachmentTime `json:"lastmod_time,omitempty"`
+	ByteCount   int64           `json:"byte_count,omitempty"`
+	Data        AttachmentData  `json:"data"`
+}
+
+// AttachmentTime carries a DIDComm attachment's `lastmod_time`.
+//
+// DIDComm v2 defines the field, in the Attachments section, as "OPTIONAL. A
+// hint about when the content in this attachment was last modified" — and
+// states no type for it at all. The same spec pins `created_time` and
+// `expires_time` to "UTC Epoch Seconds (seconds since 1970-01-01T00:00:00Z) as
+// an integer", so the omission is visible rather than accidental. Both DIF
+// reference implementations (didcomm-rust, didcomm-python) carry the field as
+// an integer, and that is what this SDK emits; senders in the wild have also
+// emitted an RFC 3339 string. Both are read here.
+//
+// A hint must never cost the reader the message. An authorization denial whose
+// timestamp hint this SDK cannot decode is still a denial the caller has to
+// see, so decoding never fails — it records that the value was not read.
+//
+// The three cases are three different values and must not be folded together:
+//
+//	field absent      the *AttachmentTime is nil
+//	field read        Known is true; Seconds holds UTC epoch seconds
+//	field not read    Known is false; Raw holds the JSON that arrived
+//
+// Reading Seconds without checking Known reports epoch 0 for a value nobody
+// managed to read.
+type AttachmentTime struct {
+	// Seconds is UTC epoch seconds. Meaningful only when Known is true.
+	Seconds int64
+	// Known reports whether Seconds was actually read off the wire.
+	Known bool
+	// Raw is the value exactly as it arrived. It is retained even when the
+	// value was read, so a re-marshal of a message this SDK did not author
+	// does not silently rewrite what a peer sent.
+	Raw json.RawMessage
+}
+
+// NewAttachmentTime returns a read AttachmentTime for t, truncated to seconds.
+func NewAttachmentTime(t time.Time) *AttachmentTime {
+	return &AttachmentTime{Seconds: t.Unix(), Known: true}
+}
+
+// Time returns the hint as a time.Time. The second return value is false when
+// the value was not read, in which case the time.Time is the zero value and
+// means nothing.
+func (a *AttachmentTime) Time() (time.Time, bool) {
+	if a == nil || !a.Known {
+		return time.Time{}, false
+	}
+	return time.Unix(a.Seconds, 0).UTC(), true
+}
+
+// UnmarshalJSON decodes a `lastmod_time` value. It never returns an error: a
+// value this SDK cannot read is recorded as unread rather than failing the
+// enclosing message.
+func (a *AttachmentTime) UnmarshalJSON(data []byte) error {
+	a.Seconds = 0
+	a.Known = false
+	a.Raw = append(json.RawMessage(nil), data...)
+
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		a.Raw = nil
+		return nil
+	}
+
+	var asNumber json.Number
+	if err := json.Unmarshal(trimmed, &asNumber); err == nil {
+		if secs, ok := secondsFromNumeric(string(asNumber)); ok {
+			a.Seconds = secs
+			a.Known = true
+		}
+		return nil
+	}
+
+	var asString string
+	if err := json.Unmarshal(trimmed, &asString); err == nil {
+		if secs, ok := secondsFromTimestampString(asString); ok {
+			a.Seconds = secs
+			a.Known = true
+		}
+		return nil
+	}
+
+	// An object, an array or a bool. Nothing to read; Raw keeps what came.
+	return nil
+}
+
+// MarshalJSON emits epoch seconds for a value that was read, and otherwise
+// re-emits exactly what arrived, so relaying a peer's message does not rewrite
+// a field this SDK did not understand.
+func (a AttachmentTime) MarshalJSON() ([]byte, error) {
+	if a.Known {
+		return []byte(strconv.FormatInt(a.Seconds, 10)), nil
+	}
+	if len(a.Raw) > 0 {
+		return append(json.RawMessage(nil), a.Raw...), nil
+	}
+	return []byte("null"), nil
+}
+
+// secondsFromNumeric reads a JSON number as epoch seconds. A fractional value
+// is truncated towards zero.
+func secondsFromNumeric(s string) (int64, bool) {
+	if secs, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return secs, true
+	}
+	if f, err := strconv.ParseFloat(s, 64); err == nil {
+		return int64(f), true
+	}
+	return 0, false
+}
+
+// secondsFromTimestampString reads the string forms seen on the wire: an RFC
+// 3339 timestamp (what Elixir's DateTime.to_iso8601/1 produces, fractional
+// seconds included) or epoch seconds spelled as digits.
+func secondsFromTimestampString(s string) (int64, bool) {
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t.Unix(), true
+	}
+	if secs, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return secs, true
+	}
+	return 0, false
 }
 
 // AttachmentData carries the attachment payload.
@@ -41,6 +167,14 @@ type Message struct {
 	Context        *MessageContext `json:"-"`
 	Attachments    []Attachment    `json:"-"` // DIDComm v2 attachments (spec §5)
 
+	// AttachmentsUnread is non-nil when the message carried an `attachments`
+	// header this SDK could not decode. Attachments is then nil for that
+	// reason, not because the message carried none — reporting "no
+	// attachments" for a header nobody could read states something that was
+	// never measured. The message itself is still delivered: a denial must not
+	// disappear because a hint travelling beside it was malformed.
+	AttachmentsUnread error `json:"-"`
+
 	// Internal fields
 	bodyRaw json.RawMessage // raw JSON body for lazy deserialization
 	ackFn   func(id string) // set by client for manual ack
@@ -48,8 +182,8 @@ type Message struct {
 
 // MessageContext contains metadata from the cloud-node, present on inbound messages.
 type MessageContext struct {
-	Recipient         string       `json:"recipient"`
-	Authorized        bool         `json:"authorized"`
+	Recipient         string             `json:"recipient"`
+	Authorized        bool               `json:"authorized"`
 	SenderCredentials []SenderCredential `json:"sender_credentials"`
 }
 
@@ -108,13 +242,13 @@ func marshalDIDComm(msg *Message) ([]byte, error) {
 	}
 
 	env := didcommEnvelope{
-		ID:       msg.ID,
-		Type:     msg.Type,
-		From:     msg.From,
-		To:       msg.To,
-		ThreadID: msg.ThreadID,
+		ID:             msg.ID,
+		Type:           msg.Type,
+		From:           msg.From,
+		To:             msg.To,
+		ThreadID:       msg.ThreadID,
 		ParentThreadID: msg.ParentThreadID,
-		Body:     bodyBytes,
+		Body:           bodyBytes,
 	}
 	if len(msg.Attachments) > 0 {
 		env.Attachments = msg.Attachments
@@ -157,7 +291,7 @@ func parseDIDComm(data json.RawMessage) (*Message, error) {
 		ThID        string          `json:"thid"`
 		PThID       string          `json:"pthid"`
 		Body        json.RawMessage `json:"body"`
-		Attachments []Attachment    `json:"attachments"`
+		Attachments json.RawMessage `json:"attachments"`
 	}
 	if err := json.Unmarshal(env.Plaintext, &plaintext); err != nil {
 		return nil, fmt.Errorf("parse plaintext: %w", err)
@@ -172,7 +306,19 @@ func parseDIDComm(data json.RawMessage) (*Message, error) {
 		ParentThreadID: plaintext.PThID,
 		bodyRaw:        plaintext.Body,
 	}
-	msg.Attachments = plaintext.Attachments
+	// Attachments are decoded in a second pass, on purpose. Attachments are a
+	// hint alongside the message, and a hint this SDK cannot read must not
+	// take the message down with it: the symptom of the all-or-nothing decode
+	// was an `e.m.authz.denied` problem report that never reached its caller,
+	// because one attachment field had a type this SDK did not accept.
+	if trimmed := bytes.TrimSpace(plaintext.Attachments); len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null")) {
+		var attachments []Attachment
+		if err := json.Unmarshal(trimmed, &attachments); err != nil {
+			msg.AttachmentsUnread = fmt.Errorf("decode attachments: %w", err)
+		} else {
+			msg.Attachments = attachments
+		}
+	}
 
 	if env.Context != nil {
 		creds := make([]SenderCredential, len(env.Context.SenderCredentials))
