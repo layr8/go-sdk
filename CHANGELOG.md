@@ -6,6 +6,8 @@ This file starts here. Earlier releases are recorded only in git history.
 
 ## [Unreleased]
 
+## [v0.2.1] - 2026-09-15
+
 ### Fixed
 
 - **`SignCredential` fills in `ID` and `Issuer` when the caller leaves them
@@ -224,6 +226,7 @@ This file starts here. Earlier releases are recorded only in git history.
 
 All exported API is additive; no existing signature or behaviour was removed.
 
+[v0.2.1]: https://github.com/layr8/go-sdk/releases/tag/v0.2.1
 [v0.2.0]: https://github.com/layr8/go-sdk/releases/tag/v0.2.0
 [v0.1.7]: https://github.com/layr8/go-sdk/releases/tag/v0.1.7
 [v0.1.6]: https://github.com/layr8/go-sdk/releases/tag/v0.1.6
