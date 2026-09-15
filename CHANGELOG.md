@@ -6,6 +6,19 @@ This file starts here. Earlier releases are recorded only in git history.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`SignCredential` fills in `ID` and `Issuer` when the caller leaves them
+  empty.** The cloud-node requires both fields on the credential and answers
+  `422 Invalid credential: missing required fields` when either is absent,
+  without saying which. `Credential` marks both `omitempty`, so a credential
+  built with only `CredentialSubject` was always rejected. Before sending, an
+  empty `Issuer` is now set to the DID the credential is signed with
+  (`WithIssuerDID`, else the agent DID) and an empty `ID` to a fresh
+  `urn:uuid:<UUID v4>`. A value the caller sets is sent unchanged; a
+  caller-supplied `Issuer` is not compared with the signing DID. The node,
+  Python and Elixir SDKs get the same change.
+
 ## [v0.2.0] - 2026-09-10
 
 ### Added
