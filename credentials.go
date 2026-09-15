@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/url"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // CredentialFormat controls the signed credential output encoding.
@@ -19,9 +21,12 @@ const (
 
 // Credential represents a W3C Verifiable Credential for signing.
 type Credential struct {
-	Context           []string       `json:"@context,omitempty"`
-	ID                string         `json:"id,omitempty"`
-	Type              []string       `json:"type,omitempty"`
+	Context []string `json:"@context,omitempty"`
+	// ID may be left empty: SignCredential then sends a fresh "urn:uuid:<UUID v4>".
+	ID   string   `json:"id,omitempty"`
+	Type []string `json:"type,omitempty"`
+	// Issuer may be left empty: SignCredential then sends the DID the credential
+	// is signed with (WithIssuerDID, else client.DID()).
 	Issuer            string         `json:"issuer,omitempty"`
 	CredentialSubject map[string]any `json:"credentialSubject"`
 	ValidFrom         string         `json:"validFrom,omitempty"`
@@ -66,6 +71,13 @@ func WithCredentialFormat(f CredentialFormat) CredentialSignOption {
 // SignCredential signs a W3C Verifiable Credential using the issuer's assertion key.
 // Defaults: issuer = client.DID(), format = compact_jwt.
 //
+// The cloud-node rejects a credential without an "id" or an "issuer" (HTTP 422,
+// without naming which field is missing). Both fields may be left empty here:
+// before sending, an empty Credential.Issuer is set to the issuer DID used for
+// signing (WithIssuerDID, else client.DID()), and an empty Credential.ID is set
+// to a fresh "urn:uuid:<UUID v4>". A value the caller sets is sent unchanged,
+// and a caller-supplied Issuer is not compared with the signing DID.
+//
 // Note: The cloud-node signs using the issuer DID's assertion key from the local wallet.
 func (c *Client) SignCredential(ctx context.Context, cred Credential, opts ...CredentialSignOption) (string, error) {
 	o := credentialSignOpts{
@@ -74,6 +86,14 @@ func (c *Client) SignCredential(ctx context.Context, cred Credential, opts ...Cr
 	}
 	for _, opt := range opts {
 		opt(&o)
+	}
+
+	// cred is a copy (passed by value), so filling it never reaches the caller.
+	if cred.Issuer == "" {
+		cred.Issuer = o.issuerDID
+	}
+	if cred.ID == "" {
+		cred.ID = "urn:uuid:" + uuid.NewString()
 	}
 
 	body := map[string]any{
