@@ -527,6 +527,11 @@ func (c *Client) autoFillResponse(resp *Message, original *Message) {
 	} else if resp.ThreadID == "" {
 		resp.ThreadID = original.ID
 	}
+	// The reply joins the request's trace: the request's trace context is
+	// copied unchanged unless the handler set its own.
+	if resp.TraceContext == nil {
+		resp.TraceContext = copyTraceContext(original.TraceContext)
+	}
 }
 
 // sendDispatchReply sends a dispatch_reply event to the cloud-node.
@@ -551,6 +556,8 @@ func (c *Client) sendProblemReport(original *Message, handlerErr error) {
 		Type:     "https://didcomm.org/report-problem/2.0/problem-report",
 		To:       []string{original.From},
 		ThreadID: threadID,
+		// The report stays in the request's trace.
+		TraceContext: copyTraceContext(original.TraceContext),
 		Body: &ProblemReportError{
 			Code:    "e.p.xfer.cant-process",
 			Comment: handlerErr.Error(),
