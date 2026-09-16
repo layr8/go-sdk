@@ -33,6 +33,18 @@ type refreshNode struct {
 	capabilities []string
 	joinReading  string // raw delegated_credentials; "" omits the key
 	topic        string
+	// pushAfterJoin, when set, is sent as a delegated_credentials push right
+	// behind every join reply, from the same handler call: the client's read
+	// loop gets the two frames back to back, as it does from a node that
+	// re-reads the parent right after the join.
+	pushAfterJoin string
+}
+
+// stallJoins makes every join on ch wait after it took its reply, so the read
+// loop always handles the push behind the reply first — the order a busy
+// client sees, made certain rather than likely.
+func stallJoins(ch *phoenixChannel) {
+	ch.joinReplyReceived = func() { time.Sleep(30 * time.Millisecond) }
 }
 
 func setupRefreshNode(t *testing.T) *refreshNode {
@@ -54,11 +66,15 @@ func setupRefreshNode(t *testing.T) *refreshNode {
 				resp += `,"delegated_credentials":` + n.joinReading
 			}
 			resp += "}"
+			behind := n.pushAfterJoin
 			n.mu.Unlock()
 			gn.mock.sendToClient(phoenixMessage{
 				JoinRef: msg.Ref, Ref: msg.Ref, Topic: msg.Topic, Event: "phx_reply",
 				Payload: json.RawMessage(`{"status":"ok","response":` + resp + `}`),
 			})
+			if behind != "" {
+				gn.mock.sendToClient(phoenixMessage{Topic: msg.Topic, Event: "delegated_credentials", Payload: json.RawMessage(behind)})
+			}
 			return
 		}
 		if msg.Ref != "" {
@@ -121,6 +137,26 @@ func readingJSON(t *testing.T, revision int, status string, tags ...string) stri
 func borrowedClient(t *testing.T, n *refreshNode) (*Client, context.Context) {
 	t.Helper()
 	return connectedClient(t, n.wsURL, Config{AgentDID: refreshChild, ParentDID: testParent})
+}
+
+// borrowedClientWith connects a borrowed client after letting prepare adjust
+// its channel before the first join. It mirrors Client.Connect.
+func borrowedClientWith(t *testing.T, n *refreshNode, prepare func(*phoenixChannel)) (*Client, context.Context) {
+	t.Helper()
+	c, err := NewClient(Config{NodeURL: n.wsURL, APIKey: "test-api-key", AgentDID: refreshChild, ParentDID: testParent}, discardErrors)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	_ = c.Handle("https://layr8.io/protocols/echo/1.0/request",
+		func(msg *Message) (*Message, error) { return nil, nil })
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	c.prepareChannel = prepare
+	if err := c.Connect(ctx); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+	return c, ctx
 }
 
 // wireTags sends one message and returns which children rode on it, by tag.
@@ -395,6 +431,9 @@ func TestAPanickingOnDelegationIsReportedAndTheSocketKeepsReading(t *testing.T) 
 	}
 }
 
+// TestARejoinStartsTheRevisionAgain pushes only after the rejoin has settled;
+// the push that arrives right behind a rejoin reply is covered by
+// TestAPushRightBehindARejoinReply*.
 func TestARejoinStartsTheRevisionAgain(t *testing.T) {
 	n := setupRefreshNode(t)
 	c, ctx := borrowedClient(t, n)
@@ -474,4 +513,129 @@ func TestPushReadingsArePairwiseDistinct(t *testing.T) {
 	if unread.ok {
 		t.Error("an unread push parsed as a reading to apply")
 	}
+}
+
+func (n *refreshNode) setPushAfterJoin(raw string) {
+	n.mu.Lock()
+	n.pushAfterJoin = raw
+	n.mu.Unlock()
+}
+
+// assertReadingAndWire checks the accessor and the attachments on the wire
+// agree on one tag.
+func assertReadingAndWire(t *testing.T, c *Client, ctx context.Context, n *refreshNode, tag string, all ...string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	want := "[child-of-" + tag + "]"
+	for fmt.Sprint(credIDs(c.DelegatedCredentials())) != want && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := credIDs(c.DelegatedCredentials()); fmt.Sprint(got) != want {
+		t.Fatalf("DelegatedCredentials = %v, want %s", got, want)
+	}
+	if got := wireTags(t, c, ctx, n, jwsIndex(t, all...)); fmt.Sprint(got) != "["+tag+"]" {
+		t.Fatalf("wire = %v, want [%s]", got, tag)
+	}
+}
+
+// A push right behind the join reply is applied on a first join, not dropped
+// because the join had not yet recorded that it opted in.
+func TestAPushRightBehindTheJoinReplyIsApplied(t *testing.T) {
+	n := setupRefreshNode(t)
+	n.setPushAfterJoin(readingJSON(t, 1, "complete", "p9"))
+	c, ctx := borrowedClientWith(t, n, stallJoins)
+	assertReadingAndWire(t, c, ctx, n, "p9", "p1", "p9")
+}
+
+// On a rejoin after revision 0, a push right behind the reply is not
+// overwritten by the (older) join reading.
+func TestAPushRightBehindARejoinReplyIsNotOverwritten(t *testing.T) {
+	n := setupRefreshNode(t)
+	c, ctx := borrowedClient(t, n)
+	n.setPushAfterJoin(readingJSON(t, 1, "complete", "p9"))
+	ch := c.transport.(*phoenixChannel)
+	stallJoins(ch)
+	if err := ch.join(ctx, ch.protocols); err != nil {
+		t.Fatalf("rejoin: %v", err)
+	}
+	assertReadingAndWire(t, c, ctx, n, "p9", "p1", "p9")
+}
+
+// On a rejoin after revision 3, the new connection's revision 1 right behind
+// the reply is not compared with the old connection's revision.
+func TestAPushRightBehindARejoinReplyIsNotComparedWithTheOldRevision(t *testing.T) {
+	n := setupRefreshNode(t)
+	c, ctx := borrowedClient(t, n)
+	n.push(readingJSON(t, 3, "complete", "p3"))
+	n.setPushAfterJoin(readingJSON(t, 1, "complete", "p9"))
+	ch := c.transport.(*phoenixChannel)
+	stallJoins(ch)
+	if err := ch.join(ctx, ch.protocols); err != nil {
+		t.Fatalf("rejoin: %v", err)
+	}
+	assertReadingAndWire(t, c, ctx, n, "p9", "p1", "p3", "p9")
+}
+
+// A push that lands while a join is handing its reading to the wallet must
+// not be overwritten there: the reading and the wallet end on the same set.
+func TestAPushDuringTheJoinsWalletSeedDoesNotLoseToIt(t *testing.T) {
+	n := setupRefreshNode(t)
+	c, ctx := borrowedClient(t, n)
+	ch := c.transport.(*phoenixChannel)
+
+	orig := ch.delegatedFn
+	var first atomic.Bool
+	pushed := make(chan struct{})
+	ch.delegatedFn = func(did string, reading *DelegatedCredentialsReading) {
+		// Not sync.Once: Once would make the push's own call wait here.
+		if first.CompareAndSwap(false, true) {
+			// The push is handled by another goroutine, as the read loop
+			// would, while this join has updated its state but not yet
+			// seeded the wallet.
+			go func() {
+				defer close(pushed)
+				ch.handleInbound(phoenixMessage{Topic: ch.topic, Event: "delegated_credentials",
+					Payload: json.RawMessage(readingJSON(t, 1, "complete", "p9"))})
+			}()
+			time.Sleep(50 * time.Millisecond)
+		}
+		orig(did, reading)
+	}
+	if err := ch.join(ctx, ch.protocols); err != nil {
+		t.Fatalf("rejoin: %v", err)
+	}
+	<-pushed
+	assertReadingAndWire(t, c, ctx, n, "p9", "p1", "p9")
+}
+
+// A join that fails discards what it held: a later join does not replay it.
+func TestAFailedJoinDiscardsHeldPushes(t *testing.T) {
+	n := setupRefreshNode(t)
+	c, ctx := borrowedClient(t, n)
+	ch := c.transport.(*phoenixChannel)
+
+	ch.mu.Lock()
+	ch.joining = true
+	ch.heldPushes = nil
+	ch.mu.Unlock()
+	ch.handleInbound(phoenixMessage{Topic: ch.topic, Event: "delegated_credentials",
+		Payload: json.RawMessage(readingJSON(t, 7, "complete", "p7"))})
+
+	cctx, cancel := context.WithCancel(ctx)
+	cancel()
+	if err := ch.join(cctx, ch.protocols); err == nil {
+		t.Fatal("join with a cancelled context succeeded")
+	}
+	ch.mu.Lock()
+	joining, held := ch.joining, len(ch.heldPushes)
+	ch.mu.Unlock()
+	if joining || held != 0 {
+		t.Fatalf("after a failed join: joining=%v held=%d, want false 0", joining, held)
+	}
+	// Let the cancelled join's reply arrive and be ignored, then rejoin.
+	time.Sleep(50 * time.Millisecond)
+	if err := ch.join(ctx, ch.protocols); err != nil {
+		t.Fatalf("rejoin: %v", err)
+	}
+	assertReadingAndWire(t, c, ctx, n, "p1", "p1", "p7")
 }

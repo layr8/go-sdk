@@ -40,6 +40,10 @@ type Client struct {
 	disconnectFn func(error)
 	reconnectFn  func()
 	delegationFn func(did string, reading *DelegatedCredentialsReading)
+
+	// prepareChannel, when set (tests only), adjusts the channel Connect
+	// builds before it dials.
+	prepareChannel func(*phoenixChannel)
 }
 
 type unattachedRecord struct {
@@ -216,12 +220,13 @@ func (c *Client) OnDelegation(fn func(did string, reading *DelegatedCredentialsR
 func (c *Client) delegationRefreshed(did string, reading *DelegatedCredentialsReading, _ int64) {
 	c.mu.Lock()
 	fn := c.delegationFn
+	agentDID := c.agentDID
 	c.mu.Unlock()
 	if fn == nil {
 		return
 	}
 	if did == "" {
-		did = c.agentDID
+		did = agentDID
 	}
 	defer func() {
 		if r := recover(); r != nil {
@@ -322,6 +327,9 @@ func (c *Client) Connect(ctx context.Context) error {
 	ch.setBorrower(c.cfg.ParentDID, c.cfg.childNameSource)
 	ch.onDelegatedCredentials(c.applyDelegated)
 	ch.onDelegationRefreshed(c.delegationRefreshed)
+	if c.prepareChannel != nil {
+		c.prepareChannel(ch)
+	}
 
 	// Wire up message handler
 	ch.setMessageHandler(c.handleInboundMessage)
@@ -338,12 +346,12 @@ func (c *Client) Connect(ctx context.Context) error {
 		return err
 	}
 
-	// If no DID was provided, use the one assigned by the node
+	c.mu.Lock()
+	// If no DID was provided, use the one assigned by the node. Written under
+	// mu because a push can already be read on the connection's goroutine.
 	if c.agentDID == "" && ch.assignedDID() != "" {
 		c.agentDID = ch.assignedDID()
 	}
-
-	c.mu.Lock()
 	c.transport = ch
 	c.connected = true
 	c.mu.Unlock()

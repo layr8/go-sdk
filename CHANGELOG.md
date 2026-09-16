@@ -16,7 +16,10 @@ This file starts here. Earlier releases are recorded only in git history.
   ignores a push whose `revision` is not newer than the one it holds, ignores a
   push that does not parse (and an `unread` push, which the node never sends),
   and calls `OnDelegation(did, reading)`. A rejoin starts the revision again
-  from the join reply.
+  from the join reply. A push that arrives while a join is waiting for or
+  installing its reply is held until the join has handed its reading to the
+  wallet, then applied in order, so it is neither dropped nor overwritten by
+  the older join reading.
 - `Client.SupportsEphemeralDelegationRefresh()`, `Client.OnDelegation()` and
   `DelegationRefreshCapability`.
 
