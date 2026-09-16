@@ -6,6 +6,8 @@ This file starts here. Earlier releases are recorded only in git history.
 
 ## [Unreleased]
 
+## [v0.2.3] - 2026-09-16
+
 ### Added
 
 - **A borrowed child's delegated set is kept current while it is connected.**
@@ -269,6 +271,7 @@ This file starts here. Earlier releases are recorded only in git history.
 
 All exported API is additive; no existing signature or behaviour was removed.
 
+[v0.2.3]: https://github.com/layr8/go-sdk/releases/tag/v0.2.3
 [v0.2.2]: https://github.com/layr8/go-sdk/releases/tag/v0.2.2
 [v0.2.1]: https://github.com/layr8/go-sdk/releases/tag/v0.2.1
 [v0.2.0]: https://github.com/layr8/go-sdk/releases/tag/v0.2.0
