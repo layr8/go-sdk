@@ -1,6 +1,9 @@
 package layr8
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strconv"
+)
 
 // DelegatedCredential is one credential the node signed for this DID out of
 // what its parent holds.
@@ -95,4 +98,64 @@ func parseDelegatedCredentials(raw json.RawMessage) *DelegatedCredentialsReading
 		reading.Credentials = []DelegatedCredential{}
 	}
 	return &reading
+}
+
+// DelegationRefreshCapability is the capability a node announces when it
+// pushes a replacement reading to a live borrowed child whose join asked for
+// it with delegation_refresh: true.
+const DelegationRefreshCapability = "ephemeral_delegation_refresh/1"
+
+// parseDelegationPush returns a pushed delegated_credentials reading and its
+// revision, or ok=false if it is not one to apply.
+//
+// The payload is the join reply's reading plus revision, so it goes through
+// the same parser. On top of that:
+//
+//   - revision must be a non-negative integer. Without it a consumer cannot
+//     tell a late push from a new one.
+//   - status "unread" is never pushed by the node: a refresh whose read failed
+//     sends nothing, and the last reading stands. A push that says unread
+//     anyway is dropped rather than applied, because applying it would replace
+//     a set that came from a real read with an empty list that measures
+//     nothing, and take working authority away.
+func parseDelegationPush(raw json.RawMessage) (reading *DelegatedCredentialsReading, revision int64, ok bool) {
+	reading = parseDelegatedCredentials(raw)
+	if reading == nil || reading.Status == DelegationUnread {
+		return nil, 0, false
+	}
+	revision, ok = revisionOf(raw)
+	if !ok {
+		return nil, 0, false
+	}
+	return reading, revision, true
+}
+
+// joinRevision is a join reply's delegated_credentials.revision, or 0 when an
+// older node sent none.
+func joinRevision(raw json.RawMessage) int64 {
+	if rev, ok := revisionOf(raw); ok {
+		return rev
+	}
+	return 0
+}
+
+// revisionOf reads a non-negative JSON integer "revision". A quoted number, a
+// fraction or a negative value is not a revision.
+func revisionOf(raw json.RawMessage) (int64, bool) {
+	var probe struct {
+		Revision json.RawMessage `json:"revision"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil || len(probe.Revision) == 0 {
+		return 0, false
+	}
+	for _, b := range probe.Revision {
+		if b < '0' || b > '9' {
+			return 0, false
+		}
+	}
+	rev, err := strconv.ParseInt(string(probe.Revision), 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return rev, true
 }

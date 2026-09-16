@@ -60,4 +60,12 @@ type transport interface {
 	// supportsEphemeralDelegation reports whether the node advertised
 	// ephemeral_delegation/1 at join.
 	supportsEphemeralDelegation() bool
+
+	// onDelegationRefreshed registers a callback that fires after a pushed
+	// replacement reading was applied.
+	onDelegationRefreshed(fn func(did string, reading *DelegatedCredentialsReading, revision int64))
+
+	// supportsEphemeralDelegationRefresh reports whether the node advertised
+	// ephemeral_delegation_refresh/1 at join.
+	supportsEphemeralDelegationRefresh() bool
 }

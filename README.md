@@ -466,6 +466,29 @@ about it, so no endpoint will hand it back; rejoin to be issued a new one. It
 is not individually revocable — authority is withdrawn by revoking or expiring
 the parent's grant.
 
+**Staying current while connected.** A join that names a `ParentDID` also
+asks the node to keep the set current (`delegation_refresh: true`). A node that
+does so announces it, and `client.SupportsEphemeralDelegationRefresh()` returns
+true. When the parent's grants change, the node pushes the whole new set; the
+client replaces the reading and the credentials it attaches, then calls the
+`OnDelegation` callback:
+
+```go
+client.OnDelegation(func(did string, reading *layr8.DelegatedCredentialsReading) {
+	// reading is what client.DelegatedCredentials() now returns.
+	// Runs on the connection's read goroutine: do not block here.
+})
+```
+
+A push replaces the set and never adds to it; `complete` with no credentials
+means the parent now holds nothing. No push means the last reading still
+stands — the node sends nothing when it cannot read the parent's wallet. A push
+older than the one already applied, or one that is not a well-formed reading,
+is ignored. A message already choosing its attachments when a push arrives
+goes out with the old set or the new one, never a mix. With
+`SupportsEphemeralDelegationRefresh()` false, the join reply is the only
+reading the connection gets.
+
 A refused join names its reason: `e.join.plugin.parent.not-persistent`,
 `e.join.plugin.parent.not-found`, `e.join.plugin.parent.not-hosted-here`,
 `e.join.plugin.child.not-beneath-parent`,

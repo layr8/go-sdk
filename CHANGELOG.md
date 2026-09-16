@@ -6,6 +6,25 @@ This file starts here. Earlier releases are recorded only in git history.
 
 ## [Unreleased]
 
+### Added
+
+- **A borrowed child's delegated set is kept current while it is connected.**
+  A join that names a `ParentDID` now sends `delegation_refresh: true`. When
+  the node announces `ephemeral_delegation_refresh/1`, it pushes a
+  `delegated_credentials` event with the whole new set whenever the parent's
+  grants change. The client replaces the reading and the attached credentials,
+  ignores a push whose `revision` is not newer than the one it holds, ignores a
+  push that does not parse (and an `unread` push, which the node never sends),
+  and calls `OnDelegation(did, reading)`. A rejoin starts the revision again
+  from the join reply.
+- `Client.SupportsEphemeralDelegationRefresh()`, `Client.OnDelegation()` and
+  `DelegationRefreshCapability`.
+
+### Fixed
+
+- The delegation reading and capability flags are now read and written under a
+  lock; a push arrives on the read goroutine.
+
 ## [v0.2.2] - 2026-09-16
 
 ### Added
