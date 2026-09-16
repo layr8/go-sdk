@@ -176,9 +176,64 @@ type Message struct {
 	// disappear because a hint travelling beside it was malformed.
 	AttachmentsUnread error `json:"-"`
 
+	// TraceContext is the DIDComm `trace_context` header. It is nil when the
+	// message carried none, or carried a value this SDK could not read. A
+	// handler's reply and the problem report for a failed handler copy the
+	// request's value when the reply does not set its own.
+	TraceContext *TraceContext `json:"-"`
+
 	// Internal fields
 	bodyRaw json.RawMessage // raw JSON body for lazy deserialization
 	ackFn   func(id string) // set by client for manual ack
+}
+
+// TraceContext is a W3C trace context carried in the DIDComm plaintext
+// header `trace_context`. The JSON member names are the W3C header names, so
+// the value is a ready-made text-map carrier for an OpenTelemetry propagator.
+// TraceParent is a W3C Trace Context Level 1 `traceparent`; TraceState is
+// optional. This SDK carries the value and does not validate its format (the
+// node does).
+type TraceContext struct {
+	TraceParent string `json:"traceparent"`
+	TraceState  string `json:"tracestate,omitempty"`
+}
+
+// readTraceContext reads a `trace_context` header value. It returns nil for
+// anything that is not an object with a string `traceparent`, and never an
+// error: a malformed header must not cost the reader the message. Only the two
+// defined members are kept; any other member is dropped and not forwarded. A
+// `tracestate` that is not a string is dropped.
+func readTraceContext(raw json.RawMessage) *TraceContext {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return nil
+	}
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &members); err != nil {
+		return nil
+	}
+	var tc TraceContext
+	parent, ok := members["traceparent"]
+	if !ok || json.Unmarshal(parent, &tc.TraceParent) != nil {
+		return nil
+	}
+	if state, ok := members["tracestate"]; ok {
+		var s string
+		if json.Unmarshal(state, &s) == nil {
+			tc.TraceState = s
+		}
+	}
+	return &tc
+}
+
+// copyTraceContext returns an independent copy, so a reply never shares a
+// pointer with the request it answers.
+func copyTraceContext(tc *TraceContext) *TraceContext {
+	if tc == nil {
+		return nil
+	}
+	c := *tc
+	return &c
 }
 
 // MessageContext contains metadata from the cloud-node, present on inbound messages.
@@ -225,6 +280,7 @@ type didcommEnvelope struct {
 	ParentThreadID string          `json:"pthid,omitempty"`
 	Body           json.RawMessage `json:"body"`
 	Attachments    []Attachment    `json:"attachments,omitempty"`
+	TraceContext   *TraceContext   `json:"trace_context,omitempty"`
 }
 
 // marshalDIDComm serializes a Message into DIDComm JSON wire format.
@@ -254,6 +310,7 @@ func marshalDIDComm(msg *Message) ([]byte, error) {
 	if len(msg.Attachments) > 0 {
 		env.Attachments = msg.Attachments
 	}
+	env.TraceContext = copyTraceContext(msg.TraceContext)
 	return json.Marshal(env)
 }
 
@@ -293,6 +350,9 @@ func parseDIDComm(data json.RawMessage) (*Message, error) {
 		PThID       string          `json:"pthid"`
 		Body        json.RawMessage `json:"body"`
 		Attachments json.RawMessage `json:"attachments"`
+		// Decoded raw and read separately: a malformed trace context must
+		// not fail the message.
+		TraceContext json.RawMessage `json:"trace_context"`
 	}
 	if err := json.Unmarshal(env.Plaintext, &plaintext); err != nil {
 		return nil, fmt.Errorf("parse plaintext: %w", err)
@@ -306,6 +366,7 @@ func parseDIDComm(data json.RawMessage) (*Message, error) {
 		ThreadID:       plaintext.ThID,
 		ParentThreadID: plaintext.PThID,
 		bodyRaw:        plaintext.Body,
+		TraceContext:   readTraceContext(plaintext.TraceContext),
 	}
 	// Attachments are decoded in a second pass, on purpose. Attachments are a
 	// hint alongside the message, and a hint this SDK cannot read must not

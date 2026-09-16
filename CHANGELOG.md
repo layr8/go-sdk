@@ -6,6 +6,27 @@ This file starts here. Earlier releases are recorded only in git history.
 
 ## [Unreleased]
 
+## [v0.2.2] - 2026-09-16
+
+### Added
+
+- **The `trace_context` plaintext header is carried.** A DIDComm message may
+  carry a W3C trace context in a top-level `trace_context` object
+  (`traceparent`, optional `tracestate`). The SDK used to drop it on parse and
+  never wrote it. It is now `Message.TraceContext` (type `*TraceContext`):
+  parsing reads it, marshalling writes it, and `Send` / `Request` carry a value
+  the caller sets.
+- **A handler's reply joins the request's trace.** `autoFillResponse` copies
+  the request's `TraceContext` unchanged unless the handler set its own, next
+  to where it already defaults `ThreadID`. The problem report sent for a
+  failed handler copies it too.
+
+  A value that is not an object with a string `traceparent` is dropped, never
+  a parse error, and members other than `traceparent` and `tracestate` are not
+  forwarded. The SDK does not validate the `traceparent` format. It does not
+  yet create a trace context for a new request that has none. The node SDK
+  makes the same change.
+
 ## [v0.2.1] - 2026-09-15
 
 ### Fixed
@@ -226,6 +247,7 @@ This file starts here. Earlier releases are recorded only in git history.
 
 All exported API is additive; no existing signature or behaviour was removed.
 
+[v0.2.2]: https://github.com/layr8/go-sdk/releases/tag/v0.2.2
 [v0.2.1]: https://github.com/layr8/go-sdk/releases/tag/v0.2.1
 [v0.2.0]: https://github.com/layr8/go-sdk/releases/tag/v0.2.0
 [v0.1.7]: https://github.com/layr8/go-sdk/releases/tag/v0.1.7
