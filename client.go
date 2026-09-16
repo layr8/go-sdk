@@ -39,6 +39,11 @@ type Client struct {
 
 	disconnectFn func(error)
 	reconnectFn  func()
+	delegationFn func(did string, reading *DelegatedCredentialsReading)
+
+	// prepareChannel, when set (tests only), adjusts the channel Connect
+	// builds before it dials.
+	prepareChannel func(*phoenixChannel)
 }
 
 type unattachedRecord struct {
@@ -180,6 +185,62 @@ func (c *Client) SupportsEphemeralDelegation() bool {
 	return t.supportsEphemeralDelegation()
 }
 
+// SupportsEphemeralDelegationRefresh reports whether the node advertised
+// ephemeral_delegation_refresh/1 at join: it pushes a replacement set when the
+// parent's grants change. The client asks for this on every join that names a
+// ParentDID. False means the join reply is the only reading this connection
+// gets; true and no OnDelegation call means nothing changed.
+func (c *Client) SupportsEphemeralDelegationRefresh() bool {
+	c.mu.Lock()
+	t := c.transport
+	c.mu.Unlock()
+	if t == nil {
+		return false
+	}
+	return t.supportsEphemeralDelegationRefresh()
+}
+
+// OnDelegation registers a callback invoked when the node pushed a
+// replacement delegated set for this client's borrowed DID and it was
+// applied. By then DelegatedCredentials returns the new reading and the
+// wallet attaches the new set.
+//
+// A push replaces the set, never adds to it. No call means the last reading
+// still stands: the node sends nothing when it cannot read the parent's
+// wallet. It is not called for joins or rejoins; OnReconnect covers those.
+//
+// The callback runs on the connection's read goroutine, so it must not block.
+// A panic in it is reported to the ErrorHandler as ErrHandlerPanic.
+func (c *Client) OnDelegation(fn func(did string, reading *DelegatedCredentialsReading)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.delegationFn = fn
+}
+
+func (c *Client) delegationRefreshed(did string, reading *DelegatedCredentialsReading, _ int64) {
+	c.mu.Lock()
+	fn := c.delegationFn
+	agentDID := c.agentDID
+	c.mu.Unlock()
+	if fn == nil {
+		return
+	}
+	if did == "" {
+		did = agentDID
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			c.onError(SDKError{
+				Kind:      ErrHandlerPanic,
+				Type:      "delegated_credentials",
+				Cause:     fmt.Errorf("delegation callback panicked: %v", r),
+				Timestamp: time.Now(),
+			})
+		}
+	}()
+	fn(did, reading)
+}
+
 // applyDelegated hands a join reply's credentials to the wallet, or clears
 // what a previous join left there.
 //
@@ -265,6 +326,10 @@ func (c *Client) Connect(ctx context.Context) error {
 	ch := newPhoenixChannel(c.cfg.NodeURL, c.cfg.APIKey, c.cfg.AgentDID, c.cfg.Persistent, c.cfg.DialContext)
 	ch.setBorrower(c.cfg.ParentDID, c.cfg.childNameSource)
 	ch.onDelegatedCredentials(c.applyDelegated)
+	ch.onDelegationRefreshed(c.delegationRefreshed)
+	if c.prepareChannel != nil {
+		c.prepareChannel(ch)
+	}
 
 	// Wire up message handler
 	ch.setMessageHandler(c.handleInboundMessage)
@@ -281,12 +346,12 @@ func (c *Client) Connect(ctx context.Context) error {
 		return err
 	}
 
-	// If no DID was provided, use the one assigned by the node
+	c.mu.Lock()
+	// If no DID was provided, use the one assigned by the node. Written under
+	// mu because a push can already be read on the connection's goroutine.
 	if c.agentDID == "" && ch.assignedDID() != "" {
 		c.agentDID = ch.assignedDID()
 	}
-
-	c.mu.Lock()
 	c.transport = ch
 	c.connected = true
 	c.mu.Unlock()

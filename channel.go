@@ -142,10 +142,28 @@ type phoenixChannel struct {
 	pendingJoin chan json.RawMessage
 	pendingRefs sync.Map // ref → chan serverReply
 
+	// joining is true from the moment join() writes phx_join until it has
+	// installed the reply's delegation state and handed it to the wallet.
+	// heldPushes are the delegated_credentials frames that arrived meanwhile,
+	// in arrival order. Both are guarded by mu.
+	//
+	// The node can push right behind its join reply, and the read loop hands
+	// the reply to join() and goes straight on to the next frame. Applied
+	// there, the push would be compared with the previous connection's state
+	// (or with none, on a first join) and could then be overwritten by the
+	// older join reading. So it is held until join() is done, then applied.
+	joining    bool
+	heldPushes []json.RawMessage
+	// joinReplyReceived, when set (tests only), runs on the joining goroutine
+	// right after it took the join reply and before it installs anything, so a
+	// test can let the read loop handle the next frame first.
+	joinReplyReceived func()
+
 	msgHandler   func(payload []byte)
 	disconnectFn func(error)
 	reconnectFn  func()
 	delegatedFn  func(did string, reading *DelegatedCredentialsReading)
+	refreshedFn  func(did string, reading *DelegatedCredentialsReading, revision int64)
 
 	assignedDIDVal    string
 	replyProtocolMode bool // true if server supports reply_protocol/1
@@ -159,8 +177,28 @@ type phoenixChannel struct {
 	// delegated is nil until a join reply that names a parent arrives. Nil is
 	// its own reading — "no reading" — and is never coerced into an empty
 	// complete one. See DelegatedCredentialsReading.
+	//
+	// deliverMu serializes every delivery of a reading: updating the fields
+	// below AND handing the reading to delegatedFn (the wallet) happen as one
+	// step, for a join and for a push alike. Without it a push could land
+	// between a join's state update and its wallet seed, and the join would
+	// then seed the older reading over the newer one.
+	deliverMu sync.Mutex
+
+	// delegMu guards delegated and every field below it: the join writes them
+	// on the dialing goroutine, a push on the read loop, and the accessors
+	// read them from the caller's.
+	delegMu             sync.RWMutex
 	delegated           *DelegatedCredentialsReading
 	ephemeralDelegation bool // true if server supports ephemeral_delegation/1
+	// refreshSupported is true if the node announced
+	// ephemeral_delegation_refresh/1 at the last join.
+	refreshSupported bool
+	// refreshRequested is true if the last join sent delegation_refresh: true.
+	// A push is applied only then.
+	refreshRequested bool
+	// revision of the reading in delegated; reset by every join.
+	revision int64
 
 	done chan struct{}
 
@@ -311,6 +349,13 @@ func (c *phoenixChannel) join(ctx context.Context, protocols []string) error {
 		"reply_protocol": true,
 		"did_spec":       didSpec,
 	}
+	// Ask the node to keep a borrowed child's set current. Only a join that
+	// names a parent borrows anything, so the key is not sent otherwise and an
+	// unparented join is byte for byte what it was before.
+	requestRefresh := c.parentDID != ""
+	if requestRefresh {
+		joinParams["delegation_refresh"] = true
+	}
 
 	payload, _ := json.Marshal(joinParams)
 
@@ -326,8 +371,44 @@ func (c *phoenixChannel) join(ctx context.Context, protocols []string) error {
 	replyCh := make(chan json.RawMessage, 1)
 	c.mu.Lock()
 	c.pendingJoin = replyCh
+	// Hold pushes from here until this join has delivered its reading.
+	c.joining = true
+	c.heldPushes = nil
 	c.mu.Unlock()
 
+	if err := c.joinAndDeliver(ctx, msg, replyCh, requestRefresh); err != nil {
+		c.mu.Lock()
+		c.joining = false
+		c.heldPushes = nil
+		c.mu.Unlock()
+		return err
+	}
+	c.drainHeldPushes()
+	return nil
+}
+
+// drainHeldPushes applies the pushes held while a join was in flight, in
+// arrival order, and ends the hold. The hold ends under the same lock that
+// finds the queue empty, so a push arriving during the drain is queued behind
+// the ones already there rather than applied ahead of them.
+func (c *phoenixChannel) drainHeldPushes() {
+	for {
+		c.mu.Lock()
+		held := c.heldPushes
+		c.heldPushes = nil
+		if len(held) == 0 {
+			c.joining = false
+			c.mu.Unlock()
+			return
+		}
+		c.mu.Unlock()
+		for _, raw := range held {
+			c.applyDelegationPush(raw)
+		}
+	}
+}
+
+func (c *phoenixChannel) joinAndDeliver(ctx context.Context, msg phoenixMessage, replyCh chan json.RawMessage, requestRefresh bool) error {
 	if err := c.writeMsg(msg); err != nil {
 		return fmt.Errorf("send join: %w", err)
 	}
@@ -335,6 +416,9 @@ func (c *phoenixChannel) join(ctx context.Context, protocols []string) error {
 	// Wait for join reply
 	select {
 	case payload := <-replyCh:
+		if c.joinReplyReceived != nil {
+			c.joinReplyReceived()
+		}
 		var reply struct {
 			Status   string `json:"status"`
 			Response struct {
@@ -356,14 +440,24 @@ func (c *phoenixChannel) join(ctx context.Context, protocols []string) error {
 			c.assignedDIDVal = reply.Response.DID
 		}
 		c.replyProtocolMode = hasCapability(reply.Response.Capabilities, "reply_protocol/1")
-		c.ephemeralDelegation = hasCapability(reply.Response.Capabilities, "ephemeral_delegation/1")
 
 		// The node omits the key when the join named no parent, and otherwise
 		// sends a reading that says whether it could read the parent's wallet
 		// at all. Only a well-formed reading is a reading; treating anything
 		// else as an empty complete one would state that a wallet was read and
 		// grants nothing, which none of those inputs says.
-		c.delegated = parseDelegatedCredentials(reply.Response.DelegatedCredentials)
+		reading := parseDelegatedCredentials(reply.Response.DelegatedCredentials)
+		c.deliverMu.Lock()
+		defer c.deliverMu.Unlock()
+		c.delegMu.Lock()
+		c.ephemeralDelegation = hasCapability(reply.Response.Capabilities, "ephemeral_delegation/1")
+		c.refreshSupported = hasCapability(reply.Response.Capabilities, DelegationRefreshCapability)
+		c.refreshRequested = requestRefresh
+		c.delegated = reading
+		// A rejoin starts the revision again from the join reply, so a push on
+		// the new connection is never compared with one from the old.
+		c.revision = joinRevision(reply.Response.DelegatedCredentials)
+		c.delegMu.Unlock()
 		// UNCONDITIONAL, nil included. A rejoin whose reply carries no reading
 		// is a rejoin after which the previous set must go: it was minted for a
 		// DID document this rejoin may have replaced, and the node that would
@@ -371,7 +465,7 @@ func (c *phoenixChannel) join(ctx context.Context, protocols []string) error {
 		// hand over leaves the wallet attaching the last join's credentials
 		// while delegatedCredentials() reports there are none.
 		if c.delegatedFn != nil {
-			c.delegatedFn(c.effectiveDID(), c.delegated)
+			c.delegatedFn(c.effectiveDID(), reading)
 		}
 		return nil
 	case <-ctx.Done():
@@ -464,12 +558,71 @@ func (c *phoenixChannel) onDelegatedCredentials(fn func(did string, reading *Del
 // delegatedCredentials reports what this join learned about the parent's
 // wallet. See Client.DelegatedCredentials.
 func (c *phoenixChannel) delegatedCredentials() *DelegatedCredentialsReading {
+	c.delegMu.RLock()
+	defer c.delegMu.RUnlock()
 	return c.delegated
+}
+
+// onDelegationRefreshed registers a callback that fires after a pushed
+// replacement reading was applied, after onDelegatedCredentials has already
+// run with it.
+func (c *phoenixChannel) onDelegationRefreshed(fn func(did string, reading *DelegatedCredentialsReading, revision int64)) {
+	c.refreshedFn = fn
+}
+
+// supportsEphemeralDelegationRefresh reports whether the node announced
+// ephemeral_delegation_refresh/1 at the last join.
+func (c *phoenixChannel) supportsEphemeralDelegationRefresh() bool {
+	c.delegMu.RLock()
+	defer c.delegMu.RUnlock()
+	return c.refreshSupported
+}
+
+// applyDelegationPush handles an inbound delegated_credentials push.
+//
+// The push carries the WHOLE current set, so applying it replaces what is
+// held; it never appends. It is dropped, and the last reading stands, when
+// this join did not ask for refreshes, there is no reading to replace (the
+// join named no parent), it does not parse, or its revision is not greater
+// than the one held.
+//
+// The state update and the wallet swap run under deliverMu, as one step with
+// respect to a join's delivery. The wallet swap itself is one map assignment
+// under the wallet's own lock. A send already choosing its attachments took
+// the slice before, so it uses the old set or the new one, never a mix.
+func (c *phoenixChannel) applyDelegationPush(raw json.RawMessage) {
+	reading, revision, ok := parseDelegationPush(raw)
+	if !ok {
+		return
+	}
+	c.deliverMu.Lock()
+	c.delegMu.Lock()
+	if !c.refreshRequested || c.delegated == nil || revision <= c.revision {
+		c.delegMu.Unlock()
+		c.deliverMu.Unlock()
+		return
+	}
+	c.delegated = reading
+	c.revision = revision
+	c.delegMu.Unlock()
+
+	did := c.effectiveDID()
+	if c.delegatedFn != nil {
+		c.delegatedFn(did, reading)
+	}
+	c.deliverMu.Unlock()
+	// The caller's callback runs outside deliverMu, so a callback that reads
+	// or rejoins cannot deadlock the delivery path.
+	if c.refreshedFn != nil {
+		c.refreshedFn(did, reading, revision)
+	}
 }
 
 // supportsEphemeralDelegation reports whether the node advertised
 // ephemeral_delegation/1 at join.
 func (c *phoenixChannel) supportsEphemeralDelegation() bool {
+	c.delegMu.RLock()
+	defer c.delegMu.RUnlock()
 	return c.ephemeralDelegation
 }
 
@@ -693,6 +846,18 @@ func (c *phoenixChannel) handleInbound(msg phoenixMessage) {
 		if c.msgHandler != nil {
 			c.msgHandler(msg.Payload)
 		}
+	case "delegated_credentials":
+		// A replacement reading for a borrowed child. The channel decides
+		// whether it applies; while a join is in flight it is held until the
+		// join has delivered its own reading (see joining).
+		c.mu.Lock()
+		if c.joining {
+			c.heldPushes = append(c.heldPushes, msg.Payload)
+			c.mu.Unlock()
+			return
+		}
+		c.mu.Unlock()
+		c.applyDelegationPush(msg.Payload)
 	case "phx_error", "phx_close":
 		err := fmt.Errorf("channel %s", msg.Event)
 		c.rejectPendingRefs()
