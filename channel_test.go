@@ -1131,6 +1131,10 @@ func TestPhoenixChannel_CloseAfterReconnectSendsLeaveTheNodeActsOn(t *testing.T)
 	}
 
 	// The leave goes to the second connection, which only knows its own join.
+	// This does not show that the leave carries the new join ref rather than
+	// a stale one: dial() resets refCounter and the join is the first frame,
+	// so every connection's join ref is "1". It pins that the leave reaches
+	// the second connection with a ref that connection accepts.
 	if err := ch.sendFireAndForget("message", []byte(`{}`)); err != nil {
 		t.Fatalf("sendFireAndForget() error: %v", err)
 	}

@@ -6,6 +6,8 @@ This file starts here. Earlier releases are recorded only in git history.
 
 ## [Unreleased]
 
+## [v0.2.4] - 2026-09-17
+
 ### Fixed
 
 - **`Client.Close()` now sends a leave the node acts on.** `phx_leave` was
@@ -16,6 +18,9 @@ This file starts here. Earlier releases are recorded only in git history.
   `Close()` closes the socket right after the leave, so the effect was small,
   but the leave now carries the join ref of the current connection. This SDK
   has no call that leaves one DID while the connection stays open.
+- The join ref is now read and written under a lock. A reconnect's join
+  wrote it while the read goroutine compared join replies against it, which
+  was a data race.
 
 ## [v0.2.3] - 2026-09-16
 
@@ -282,6 +287,7 @@ This file starts here. Earlier releases are recorded only in git history.
 
 All exported API is additive; no existing signature or behaviour was removed.
 
+[v0.2.4]: https://github.com/layr8/go-sdk/releases/tag/v0.2.4
 [v0.2.3]: https://github.com/layr8/go-sdk/releases/tag/v0.2.3
 [v0.2.2]: https://github.com/layr8/go-sdk/releases/tag/v0.2.2
 [v0.2.1]: https://github.com/layr8/go-sdk/releases/tag/v0.2.1
