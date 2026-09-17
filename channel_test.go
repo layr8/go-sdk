@@ -15,12 +15,22 @@ import (
 
 // mockPhoenixServer simulates a Layr8 cloud-node for testing.
 // Uses Phoenix V2 JSON array format: [join_ref, ref, topic, event, payload].
+//
+// It applies the one rule of Phoenix.Socket that decides whether a leave
+// takes effect (phoenix 1.7, Phoenix.Socket.handle_in/4): a phx_leave reaches
+// the channel only when its join_ref equals the ref the topic was joined with
+// on the same connection. Any other leave is dropped without a reply and the
+// channel - and the node's binding of the DID - keeps running. Accepted
+// leaves are recorded in leftTopics, dropped ones in ignoredLeaves, so a test
+// asserts that the node would act on a leave, not only that one was written.
 type mockPhoenixServer struct {
-	upgrader websocket.Upgrader
-	mu       sync.Mutex
-	received []phoenixMessage
-	conn     *websocket.Conn
-	onMsg    func(phoenixMessage)
+	upgrader      websocket.Upgrader
+	mu            sync.Mutex
+	received      []phoenixMessage
+	conn          *websocket.Conn
+	onMsg         func(phoenixMessage)
+	leftTopics    []string
+	ignoredLeaves []string
 }
 
 func newMockServer() *mockPhoenixServer {
@@ -38,6 +48,9 @@ func (s *mockPhoenixServer) handler(w http.ResponseWriter, r *http.Request) {
 	s.conn = conn
 	s.mu.Unlock()
 
+	// Joins are per connection: a new socket knows none of the old one's.
+	joins := map[string]string{}
+
 	for {
 		_, data, err := conn.ReadMessage()
 		if err != nil {
@@ -50,6 +63,17 @@ func (s *mockPhoenixServer) handler(w http.ResponseWriter, r *http.Request) {
 
 		s.mu.Lock()
 		s.received = append(s.received, msg)
+		switch msg.Event {
+		case "phx_join":
+			joins[msg.Topic] = msg.JoinRef
+		case "phx_leave":
+			if ref, ok := joins[msg.Topic]; ok && ref == msg.JoinRef {
+				s.leftTopics = append(s.leftTopics, msg.Topic)
+				delete(joins, msg.Topic)
+			} else {
+				s.ignoredLeaves = append(s.ignoredLeaves, msg.Topic)
+			}
+		}
 		handler := s.onMsg
 		s.mu.Unlock()
 
@@ -65,6 +89,31 @@ func (s *mockPhoenixServer) sendToClient(msg phoenixMessage) {
 	if s.conn != nil {
 		data, _ := marshalPhoenixMsg(msg)
 		s.conn.WriteMessage(websocket.TextMessage, data)
+	}
+}
+
+// waitForLeave waits until the server has accepted a leave for topic and
+// fails the test if it did not, or if any leave was ignored.
+func (s *mockPhoenixServer) waitForLeave(t *testing.T, topic string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		s.mu.Lock()
+		left := append([]string(nil), s.leftTopics...)
+		ignored := append([]string(nil), s.ignoredLeaves...)
+		s.mu.Unlock()
+		if len(ignored) > 0 {
+			t.Fatalf("server ignored phx_leave for %v (join_ref did not match the join); accepted: %v", ignored, left)
+		}
+		for _, l := range left {
+			if l == topic {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("server never accepted phx_leave for %q; accepted: %v", topic, left)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -1002,4 +1051,91 @@ func TestPhoenixChannel_DetectsHalfDeadConnection(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("timeout: SDK did not detect half-dead connection within 3s (pongWait=800ms)")
 	}
+}
+
+func joinOKHandler(mock *mockPhoenixServer) func(phoenixMessage) {
+	return func(msg phoenixMessage) {
+		if msg.Event == "phx_join" {
+			mock.sendToClient(phoenixMessage{
+				JoinRef: msg.Ref,
+				Ref:     msg.Ref,
+				Topic:   msg.Topic,
+				Event:   "phx_reply",
+				Payload: json.RawMessage(`{"status":"ok","response":{"did":"did:web:node:test-123"}}`),
+			})
+		}
+	}
+}
+
+func TestPhoenixChannel_CloseSendsLeaveTheNodeActsOn(t *testing.T) {
+	mock := newMockServer()
+	mock.onMsg = joinOKHandler(mock)
+
+	server := httptest.NewServer(http.HandlerFunc(mock.handler))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/plugin_socket/websocket"
+	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test", false, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := ch.connect(ctx, []string{"https://layr8.io/protocols/echo/1.0"}); err != nil {
+		t.Fatalf("connect() error: %v", err)
+	}
+	// Traffic after the join moves the ref counter past the join ref, so a
+	// leave that carried its own ref (or none) would not match.
+	if err := ch.sendFireAndForget("message", []byte(`{}`)); err != nil {
+		t.Fatalf("sendFireAndForget() error: %v", err)
+	}
+
+	if err := ch.close(); err != nil {
+		t.Fatalf("close() error: %v", err)
+	}
+	mock.waitForLeave(t, "plugins:did:web:test")
+}
+
+func TestPhoenixChannel_CloseAfterReconnectSendsLeaveTheNodeActsOn(t *testing.T) {
+	mock := newMockServer()
+	mock.onMsg = joinOKHandler(mock)
+
+	server := httptest.NewServer(http.HandlerFunc(mock.handler))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/plugin_socket/websocket"
+	ch := newPhoenixChannel(wsURL, "test-key", "did:web:test", false, nil)
+
+	reconnected := make(chan struct{}, 1)
+	ch.onReconnect(func() {
+		select {
+		case reconnected <- struct{}{}:
+		default:
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := ch.connect(ctx, []string{"https://layr8.io/protocols/echo/1.0"}); err != nil {
+		t.Fatalf("connect() error: %v", err)
+	}
+
+	mock.mu.Lock()
+	mock.conn.Close()
+	mock.mu.Unlock()
+
+	select {
+	case <-reconnected:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for onReconnect")
+	}
+
+	// The leave goes to the second connection, which only knows its own join.
+	if err := ch.sendFireAndForget("message", []byte(`{}`)); err != nil {
+		t.Fatalf("sendFireAndForget() error: %v", err)
+	}
+	if err := ch.close(); err != nil {
+		t.Fatalf("close() error: %v", err)
+	}
+	mock.waitForLeave(t, "plugins:did:web:test")
 }
