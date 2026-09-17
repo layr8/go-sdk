@@ -132,9 +132,14 @@ type phoenixChannel struct {
 	dialContext func(ctx context.Context, network, addr string) (net.Conn, error)
 
 	conn *websocket.Conn
-	mu   sync.Mutex // protects conn writes, refCounter, and reconnecting
+	mu   sync.Mutex // protects conn writes, refCounter, joinRef, and reconnecting
 
-	refCounter   int
+	refCounter int
+	// joinRef is the ref of the last phx_join written on the current
+	// connection. phx_leave must carry it: Phoenix acts on a leave only when
+	// its join_ref equals the one the topic was joined with, and silently
+	// drops any other leave, leaving the channel (and the DID binding)
+	// running until the socket closes.
 	joinRef      string
 	protocols    []string // stored from connect() for reconnect
 	reconnecting bool     // true while reconnect loop is running
@@ -314,7 +319,9 @@ func (c *phoenixChannel) dial(ctx context.Context) error {
 
 func (c *phoenixChannel) join(ctx context.Context, protocols []string) error {
 	ref := c.nextRef()
+	c.mu.Lock()
 	c.joinRef = ref
+	c.mu.Unlock()
 
 	storage := "ephemeral"
 	if c.persistent {
@@ -641,11 +648,13 @@ func (c *phoenixChannel) close() error {
 	c.mu.Lock()
 	conn := c.conn
 	c.reconnecting = false
+	joinRef := c.joinRef
 	c.mu.Unlock()
 
 	if conn != nil {
-		// Send phx_leave
+		// Send phx_leave with the topic's join ref, or Phoenix ignores it.
 		leaveMsg := phoenixMessage{
+			JoinRef: joinRef,
 			Ref:     c.nextRef(),
 			Topic:   c.topic,
 			Event:   "phx_leave",
@@ -818,8 +827,9 @@ func (c *phoenixChannel) handleInbound(msg phoenixMessage) {
 		// Join reply
 		c.mu.Lock()
 		ch := c.pendingJoin
+		joinRef := c.joinRef
 		c.mu.Unlock()
-		if ch != nil && msg.Ref == c.joinRef {
+		if ch != nil && msg.Ref == joinRef {
 			select {
 			case ch <- msg.Payload:
 			default:
