@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"net/url"
 	"strings"
 	"sync"
@@ -245,15 +246,19 @@ func (c *phoenixChannel) connect(ctx context.Context, protocols []string) error 
 // dial establishes the WebSocket connection, joins the channel, and starts
 // the read loop and heartbeat. Used by both initial connect() and reconnect.
 func (c *phoenixChannel) dial(ctx context.Context) error {
-	// Build URL with API key
+	// The API key travels in the x-api-key upgrade header, never in the URL.
+	// A URL is what proxies, load balancers and the node's own request log
+	// record, so a key in the query string ends up in logs; a request header
+	// is not logged by default.
 	u, err := url.Parse(c.wsURL)
 	if err != nil {
 		return fmt.Errorf("parse URL: %w", err)
 	}
 	q := u.Query()
-	q.Set("api_key", c.apiKey)
 	q.Set("vsn", "2.0.0")
 	u.RawQuery = q.Encode()
+	header := http.Header{}
+	header.Set(apiKeyHeader, c.apiKey)
 
 	// Connect WebSocket
 	dialFn := c.dialContext
@@ -272,7 +277,7 @@ func (c *phoenixChannel) dial(ctx context.Context) error {
 		HandshakeTimeout: 10 * time.Second,
 		NetDialContext:   dialFn,
 	}
-	conn, _, err := dialer.DialContext(ctx, u.String(), nil)
+	conn, _, err := dialer.DialContext(ctx, u.String(), header)
 	if err != nil {
 		return &ConnectionError{URL: c.wsURL, Reason: err.Error()}
 	}

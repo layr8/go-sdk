@@ -6,6 +6,25 @@ This file starts here. Earlier releases are recorded only in git history.
 
 ## [Unreleased]
 
+### Changed
+
+- **The API key is sent in the `x-api-key` header, never in the URL.** The
+  plugin socket's WebSocket upgrade used to carry the key as the `api_key`
+  query parameter, where proxies, load balancers and request logs record it.
+  It now travels in the `x-api-key` upgrade header, the same header the REST
+  calls already used; the URL carries only `vsn=2.0.0`. **Requires a node
+  that accepts `x-api-key` on the plugin socket** (cloud-node PR link to be
+  added by the coordinator). A node that reads the key only from the query
+  string refuses this client.
+
+### Security
+
+- Formatting a `Config` or a `*Client` no longer prints the API key.
+  `String`, `GoString`, `Format` and `slog.LogValuer` render the key as
+  `[REDACTED]`, so `fmt.Printf("%+v", cfg)`, `%#v` of a client and
+  `slog.Any("cfg", cfg)` are safe to log. Reading `cfg.APIKey` directly
+  still returns the key.
+
 ## [v0.2.4] - 2026-09-17
 
 ### Fixed

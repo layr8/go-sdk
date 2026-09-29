@@ -61,7 +61,7 @@ func (r *restClient) post(ctx context.Context, path string, body any, result any
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if r.apiKey != "" {
-		req.Header.Set("x-api-key", r.apiKey)
+		req.Header.Set(apiKeyHeader, r.apiKey)
 	}
 
 	return r.do(req, result)
@@ -74,7 +74,7 @@ func (r *restClient) get(ctx context.Context, path string, result any) error {
 		return fmt.Errorf("create request: %w", err)
 	}
 	if r.apiKey != "" {
-		req.Header.Set("x-api-key", r.apiKey)
+		req.Header.Set(apiKeyHeader, r.apiKey)
 	}
 
 	return r.do(req, result)
