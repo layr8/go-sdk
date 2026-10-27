@@ -233,7 +233,7 @@ func (c *Client) delegationRefreshed(did string, reading *DelegatedCredentialsRe
 			c.onError(SDKError{
 				Kind:      ErrHandlerPanic,
 				Type:      "delegated_credentials",
-				Cause:     fmt.Errorf("delegation callback panicked: %v", r),
+				Cause:     panicCause("delegation callback panicked", r),
 				Timestamp: time.Now(),
 			})
 		}
@@ -499,7 +499,7 @@ func (c *Client) runHandlerWithReply(entry handlerEntry, msg *Message) {
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
-				handlerErr = fmt.Errorf("handler panic: %v", r)
+				handlerErr = panicCause("handler panic", r)
 				c.onError(SDKError{
 					Kind:      ErrHandlerPanic,
 					MessageID: msg.ID,
@@ -519,7 +519,7 @@ func (c *Client) runHandlerWithReply(entry handlerEntry, msg *Message) {
 			return
 		}
 		c.sendProblemReport(msg, handlerErr)
-		c.sendDispatchReply("error", handlerErr.Error(), handlerErr.Error())
+		c.sendDispatchReply("error", handlerErr.Error(), problemComment(handlerErr))
 		return
 	}
 
@@ -545,7 +545,7 @@ func (c *Client) runHandlerWithReply(entry handlerEntry, msg *Message) {
 func (c *Client) runHandler(entry handlerEntry, msg *Message) {
 	defer func() {
 		if r := recover(); r != nil {
-			err := fmt.Errorf("handler panic: %v", r)
+			err := panicCause("handler panic", r)
 			c.sendProblemReport(msg, err)
 			c.onError(SDKError{
 				Kind:      ErrHandlerPanic,
@@ -612,6 +612,36 @@ func (c *Client) sendDispatchReply(status, code, message string) {
 	c.transport.sendFireAndForget("dispatch_reply", data)
 }
 
+// handlerPanicComment is what a peer is told when a handler panics. The panic
+// value is never sent: it is whatever the handler was holding, which is often
+// the message being handled.
+const handlerPanicComment = "The message handler failed to process this message."
+
+// errHandlerPanic marks a handler failure that came from a panic rather than
+// from an error the handler chose to return.
+type errHandlerPanic struct{ msg string }
+
+func (e *errHandlerPanic) Error() string { return e.msg }
+
+// panicCause describes a recovered panic by the type of its value only. The
+// value itself (a string, an error, a struct) can quote the message or the
+// credentials being handled, and this error reaches the ErrorHandler, which
+// LogErrors writes to a log.
+func panicCause(prefix string, r any) error {
+	return &errHandlerPanic{msg: fmt.Sprintf("%s: panic value of type %T withheld", prefix, r)}
+}
+
+// problemComment is the comment a problem report carries for a handler
+// failure. An error the handler returned is its own message to the peer and
+// is sent as before; a panic gets fixed text.
+func problemComment(handlerErr error) string {
+	var p *errHandlerPanic
+	if errors.As(handlerErr, &p) {
+		return handlerPanicComment
+	}
+	return handlerErr.Error()
+}
+
 func (c *Client) sendProblemReport(original *Message, handlerErr error) {
 	threadID := original.ThreadID
 	if threadID == "" {
@@ -625,7 +655,7 @@ func (c *Client) sendProblemReport(original *Message, handlerErr error) {
 		TraceContext: copyTraceContext(original.TraceContext),
 		Body: &ProblemReportError{
 			Code:    "e.p.xfer.cant-process",
-			Comment: handlerErr.Error(),
+			Comment: problemComment(handlerErr),
 		},
 	}
 	c.sendMessage(report)
@@ -831,7 +861,7 @@ func (c *Client) notifyGrantMiss(info GrantMissInfo) {
 		if r := recover(); r != nil {
 			c.onError(SDKError{
 				Kind:      ErrHandlerPanic,
-				Cause:     fmt.Errorf("OnGrantMiss panic: %v", r),
+				Cause:     panicCause("OnGrantMiss panic", r),
 				Timestamp: time.Now(),
 			})
 		}

@@ -6,6 +6,26 @@ This file starts here. Earlier releases are recorded only in git history.
 
 ## [Unreleased]
 
+### Changed
+
+- **A handler panic's value is no longer sent or reported.** When a handler
+  panicked, the panic value (`fmt.Sprintf("%v", r)`) became the problem
+  report's `comment` sent to the peer, both fields of the `dispatch_reply`
+  sent to the node, and the `Cause` handed to the `ErrorHandler`, which
+  `LogErrors` writes to a log. The value is whatever the handler was holding,
+  often the message being handled. The problem report now carries
+  `"The message handler failed to process this message."`, the
+  `dispatch_reply` the same text, and `Cause` names only the panic value's
+  type. The problem code is unchanged (`e.p.xfer.cant-process`). An error a
+  handler *returns* is its own message to the peer and is sent as before.
+  The same applies to a panic in an `OnDelegation` or `OnGrantMiss` callback,
+  whose arguments are credentials and grant details.
+- **`dispatch_reply.code` for a handler panic changed text.** It was the
+  formatted panic value (`handler panic: <value>`); it is now
+  `handler panic: panic value of type <T> withheld`. A node or tool that
+  matched on the old text sees the new one. `dispatch_reply.message` is the
+  fixed text above.
+
 ## [v0.2.4] - 2026-09-17
 
 ### Fixed
