@@ -20,6 +20,11 @@ This file starts here. Earlier releases are recorded only in git history.
   handler *returns* is its own message to the peer and is sent as before.
   The same applies to a panic in an `OnDelegation` or `OnGrantMiss` callback,
   whose arguments are credentials and grant details.
+- **`dispatch_reply.code` for a handler panic changed text.** It was the
+  formatted panic value (`handler panic: <value>`); it is now
+  `handler panic: panic value of type <T> withheld`. A node or tool that
+  matched on the old text sees the new one. `dispatch_reply.message` is the
+  fixed text above.
 
 ## [v0.2.4] - 2026-09-17
 

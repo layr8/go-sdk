@@ -166,3 +166,38 @@ func TestHandlerReturnedError_IsStillSentToThePeer(t *testing.T) {
 		t.Errorf("problem report comment = %q, want the handler's returned error", got)
 	}
 }
+
+// The callbacks' arguments are credentials and grant details, so a panic that
+// quotes them must not reach the ErrorHandler's Cause either.
+func TestCallbackPanics_ValueReachesNoLog(t *testing.T) {
+	marker := fmt.Sprintf("SECRET-MARKER-%d", time.Now().UnixNano())
+
+	var errs []SDKError
+	client, err := NewClient(Config{
+		NodeURL:  "ws://test.invalid/plugin_socket/websocket",
+		APIKey:   "test-key",
+		AgentDID: "did:web:alice",
+		OnGrantMiss: func(info GrantMissInfo) {
+			panic("grant miss for " + info.Type)
+		},
+	}, func(e SDKError) { errs = append(errs, e) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.OnDelegation(func(did string, reading *DelegatedCredentialsReading) {
+		panic("bad credential " + reading.Credentials[0].CredentialJWT)
+	})
+
+	client.delegationRefreshed("did:web:alice", &DelegatedCredentialsReading{
+		Credentials: []DelegatedCredential{{ID: "cred-1", CredentialJWT: marker}},
+	}, 1)
+	client.notifyGrantMiss(GrantMissInfo{To: []string{"did:web:bob"}, Type: marker})
+
+	logged := loggedBy(errs)
+	if strings.Contains(logged, marker) {
+		t.Errorf("LogErrors output carries a callback's panic value: %s", logged)
+	}
+	if len(errs) != 2 || errs[0].Kind != ErrHandlerPanic || errs[1].Kind != ErrHandlerPanic {
+		t.Fatalf("want two ErrHandlerPanic reports, got %+v", errs)
+	}
+}
